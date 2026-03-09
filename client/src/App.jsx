@@ -1,0 +1,1373 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import {
+    Upload, FileText, Send, Download, Settings, Bot, User, Loader2,
+    CheckCircle, AlertCircle, X, Trash2, Copy, Check, Eye, Table,
+    Zap, Sparkles, Brain, ChevronDown, Plus, BarChart3, RefreshCw,
+    FileSpreadsheet, Target, Info
+} from 'lucide-react';
+
+function App() {
+    // ═══════════ 状态管理 ═══════════
+    const [messages, setMessages] = useState([]);
+    const [inputText, setInputText] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [documentContent, setDocumentContent] = useState('');
+    const [documentName, setDocumentName] = useState('');
+    const [apiStatus, setApiStatus] = useState({ hasApiKey: false });
+    const [tableData, setTableData] = useState([]);
+    const [streamingContent, setStreamingContent] = useState('');
+    const [copied, setCopied] = useState(false);
+    const [isDragging, setIsDragging] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [showPreview, setShowPreview] = useState(false);
+    const [showTableView, setShowTableView] = useState(false);
+    const [errorMessage, setErrorMessage] = useState('');
+    const [toastMessage, setToastMessage] = useState('');
+    const [isWaitingForAnalysis, setIsWaitingForAnalysis] = useState(false);
+    const [userGuidelines, setUserGuidelines] = useState('');
+
+    // 模型选择
+    const [selectedModel, setSelectedModel] = useState(() => {
+        if (typeof window !== 'undefined') {
+            return window.localStorage.getItem('selectedModel') || 'deepseek-v3';
+        }
+        return 'deepseek-v3';
+    });
+
+    // 目标功能过程数量
+    const [minFunctionCount, setMinFunctionCount] = useState(() => {
+        if (typeof window !== 'undefined') {
+            const saved = window.localStorage.getItem('minFunctionCount');
+            return saved ? parseInt(saved, 10) || 30 : 30;
+        }
+        return 30;
+    });
+
+    // 两步骤模式
+    const [functionListText, setFunctionListText] = useState('');
+    const [showFunctionListEditor, setShowFunctionListEditor] = useState(false);
+    const [currentStep, setCurrentStep] = useState(0); // 0=未开始, 1=章节识别, 2=提取中, 3=待确认, 4=拆分中
+
+    // 章节模式
+    const [chapters, setChapters] = useState([]);
+    const [showChapterView, setShowChapterView] = useState(false);
+
+    const messagesEndRef = useRef(null);
+    const fileInputRef = useRef(null);
+    const dropZoneRef = useRef(null);
+    const abortControllerRef = useRef(null);
+
+    // ═══════════ 初始化 ═══════════
+    useEffect(() => {
+        checkApiStatus();
+    }, []);
+
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            window.localStorage.setItem('selectedModel', selectedModel);
+            window.localStorage.setItem('minFunctionCount', String(minFunctionCount));
+        }
+    }, [selectedModel, minFunctionCount]);
+
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages, streamingContent]);
+
+    // ═══════════ API ═══════════
+    const checkApiStatus = async () => {
+        try {
+            const res = await axios.get('/api/health');
+            setApiStatus(res.data);
+        } catch (error) {
+            console.error('检查API状态失败:', error);
+        }
+    };
+
+    const handleModelChange = async (model) => {
+        setSelectedModel(model);
+        try {
+            await axios.post('/api/switch-model', { model });
+            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'qwen3-coder': 'Qwen3-Coder-Plus' };
+            showToast(`已切换到 ${labels[model] || model}`);
+        } catch (error) {
+            showToast('切换模型失败');
+        }
+    };
+
+    const getUserConfig = () => {
+        const modelMap = { 'deepseek-v3': 'deepseek-v3', 'qwen3-coder': 'qwen3-coder-plus' };
+        return {
+            apiKey: null,
+            baseUrl: 'https://apis.iflow.cn/v1',
+            model: modelMap[selectedModel] || 'deepseek-v3',
+            provider: 'iflow'
+        };
+    };
+
+    const showToast = (message) => {
+        setToastMessage(message);
+        setTimeout(() => setToastMessage(''), 2500);
+    };
+
+    // ═══════════ 文件处理 ═══════════
+    const handleDragEnter = useCallback((e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); }, []);
+    const handleDragLeave = useCallback((e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (e.currentTarget === dropZoneRef.current && !e.currentTarget.contains(e.relatedTarget)) setIsDragging(false);
+    }, []);
+    const handleDragOver = useCallback((e) => { e.preventDefault(); e.stopPropagation(); }, []);
+    const handleDrop = useCallback((e) => {
+        e.preventDefault(); e.stopPropagation(); setIsDragging(false);
+        const files = e.dataTransfer?.files;
+        if (files?.length > 0) processFile(files[0]);
+    }, []);
+
+    const handleFileSelect = (e) => {
+        const file = e.target.files?.[0];
+        if (file) processFile(file);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    const processFile = async (file) => {
+        setErrorMessage('');
+        const ext = '.' + file.name.split('.').pop().toLowerCase();
+        if (!['.docx', '.txt', '.md'].includes(ext)) {
+            setErrorMessage(`不支持的文件格式: ${ext}，请上传 .docx, .txt 或 .md 文件`);
+            return;
+        }
+        if (file.size > 50 * 1024 * 1024) {
+            setErrorMessage('文件大小超过限制（最大50MB）');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            setIsLoading(true);
+            setUploadProgress(0);
+            const res = await axios.post('/api/parse-word', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+                onUploadProgress: (e) => setUploadProgress(Math.round((e.loaded * 100) / e.total))
+            });
+
+            if (res.data.success) {
+                setDocumentContent(res.data.text);
+                setDocumentName(res.data.filename);
+                setUploadProgress(100);
+                setMessages(prev => [...prev,
+                { role: 'system', content: `📄 已导入文档: ${res.data.filename}\n📊 大小: ${(res.data.fileSize / 1024).toFixed(1)} KB | 字符数: ${res.data.wordCount}\n\n${res.data.text.substring(0, 600)}${res.data.text.length > 600 ? '\n\n...(点击"预览文档"查看完整内容)' : ''}` },
+                { role: 'assistant', content: '✅ 文档已就绪！您可以在下方输入**特殊拆分要求**，或直接点击**「开始智能拆分」**按钮。' }
+                ]);
+                setIsWaitingForAnalysis(true);
+            }
+        } catch (error) {
+            const msg = error.response?.data?.error || error.message;
+            setErrorMessage(`文档解析失败: ${msg}`);
+        } finally {
+            setIsLoading(false);
+            setTimeout(() => setUploadProgress(0), 1000);
+        }
+    };
+
+    // ═══════════ 表格数据去重 ═══════════
+
+    // 从功能过程名提取关键词，支持逐步加长
+    const getKeyword = (processName, length = 4) => {
+        if (!processName) return '';
+        const clean = processName.replace(/\[.*?\]\s*/, '').trim();
+        if (clean.length <= length) return clean;
+        return clean.substring(0, length);
+    };
+
+    // 生成唯一名称：关键词自然融入名称中，不使用括号和数字
+    const makeUniqueName = (original, processName, existingNames, verbPrefix = null) => {
+        const cleanProcess = (processName || '').replace(/\[.*?\]\s*/, '').trim();
+        if (!cleanProcess) return original;
+
+        // 自动检测动词前缀
+        if (!verbPrefix) {
+            const autoVerb = original.match(/^(接收|读取|保存|更新|返回|呈现|记录|检索|获取|查询|写入|删除|批量)/);
+            if (autoVerb) verbPrefix = autoVerb[1];
+        }
+
+        const lengths = [4, 6, 8, cleanProcess.length];
+        for (const len of lengths) {
+            const keyword = cleanProcess.substring(0, Math.min(len, cleanProcess.length));
+            let candidate;
+            if (verbPrefix) {
+                candidate = verbPrefix + keyword + original.substring(verbPrefix.length);
+            } else {
+                candidate = keyword + original;
+            }
+            if (!existingNames.has(candidate.toLowerCase().trim())) {
+                return candidate;
+            }
+        }
+        return cleanProcess + original;
+    };
+
+    const deduplicateData = (existing, newData) => {
+        // 1. 按功能过程去重（跳过已存在的整个功能过程）
+        const existingProcesses = new Set(
+            existing.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
+                .map(r => r.functionalProcess.toLowerCase().trim())
+        );
+        const result = [];
+        let skipCurrent = false;
+        for (const row of newData) {
+            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                if (existingProcesses.has(row.functionalProcess.toLowerCase().trim())) {
+                    skipCurrent = true; continue;
+                }
+                skipCurrent = false;
+                existingProcesses.add(row.functionalProcess.toLowerCase().trim());
+            }
+            if (!skipCurrent) result.push(row);
+        }
+
+        // 2. 对合并后的数据进行数据组和子过程描述去重
+        const allData = [...existing, ...result];
+
+        // 重建每行对应的功能过程
+        let currentProcess = '';
+        const rowProcessMap = [];
+        for (let i = 0; i < allData.length; i++) {
+            if (allData[i].dataMovementType === 'E' && allData[i].functionalProcess) {
+                currentProcess = allData[i].functionalProcess;
+            }
+            rowProcessMap[i] = currentProcess;
+        }
+
+        // 收集已有 existing 中的数据组和子过程描述
+        const existingDataGroups = new Map(); // dataGroup(lower) -> processName
+        for (let i = 0; i < existing.length; i++) {
+            const dg = existing[i].dataGroup?.trim();
+            if (dg && dg !== '待补充') {
+                existingDataGroups.set(dg.toLowerCase(), rowProcessMap[i]);
+            }
+        }
+
+        const allDgNames = new Set();
+        for (let i = 0; i < existing.length; i++) {
+            const dg = existing[i].dataGroup?.trim();
+            if (dg && dg !== '待补充') allDgNames.add(dg.toLowerCase());
+        }
+
+        const allDescNames = new Set();
+        for (let i = 0; i < existing.length; i++) {
+            const desc = existing[i].subProcessDesc?.trim();
+            if (desc) allDescNames.add(desc.toLowerCase());
+        }
+
+        // 对新增result中的行做数据组/子过程去重（关键词前缀策略）
+        const newStartIdx = existing.length;
+        for (let i = 0; i < result.length; i++) {
+            const globalIdx = newStartIdx + i;
+            const processName = rowProcessMap[globalIdx];
+
+            // 检查数据组是否与已有数据冲突
+            const dg = result[i].dataGroup?.trim();
+            if (dg && dg !== '待补充') {
+                const dgKey = dg.toLowerCase();
+                if (existingDataGroups.has(dgKey) && existingDataGroups.get(dgKey) !== processName) {
+                    const newName = makeUniqueName(dg, processName, allDgNames);
+                    if (newName !== dg) {
+                        result[i] = { ...result[i], dataGroup: newName };
+                    }
+                }
+                allDgNames.add((result[i].dataGroup || dg).toLowerCase().trim());
+                existingDataGroups.set((result[i].dataGroup || dg).toLowerCase(), processName);
+            }
+
+            // 检查子过程描述是否与已有数据冲突
+            const desc = result[i].subProcessDesc?.trim();
+            if (desc && allDescNames.has(desc.toLowerCase())) {
+                const prefixMatch = desc.match(/^(接收|读取|保存|更新|返回|呈现|记录|检索|获取|查询|写入|删除|批量)/);
+                const newName = makeUniqueName(desc, processName, allDescNames, prefixMatch ? prefixMatch[1] : null);
+                if (newName !== desc) {
+                    result[i] = { ...result[i], subProcessDesc: newName };
+                }
+            }
+            allDescNames.add((result[i].subProcessDesc || desc || '').toLowerCase().trim());
+        }
+
+        // 3. 最终验证：检查result中是否仍有重复，用关键词后缀去重
+        const MAX_VERIFY = 3;
+        for (let v = 0; v < MAX_VERIFY; v++) {
+            let hasdup = false;
+
+            // 数据组验证
+            const verifyDgSet = new Set();
+            for (let i = 0; i < existing.length; i++) {
+                const dg = existing[i].dataGroup?.trim()?.toLowerCase();
+                if (dg && dg !== '待补充') verifyDgSet.add(dg);
+            }
+            for (let i = 0; i < result.length; i++) {
+                const dg = result[i].dataGroup?.trim()?.toLowerCase();
+                if (!dg || dg === '待补充') continue;
+                if (verifyDgSet.has(dg)) {
+                    const newName = makeUniqueName(result[i].dataGroup, rowProcessMap[newStartIdx + i], verifyDgSet);
+                    result[i] = { ...result[i], dataGroup: newName };
+                    hasdup = true;
+                }
+                verifyDgSet.add(result[i].dataGroup.trim().toLowerCase());
+            }
+
+            // 子过程描述验证
+            const verifyDescSet = new Set();
+            for (let i = 0; i < existing.length; i++) {
+                const d = existing[i].subProcessDesc?.trim()?.toLowerCase();
+                if (d) verifyDescSet.add(d);
+            }
+            for (let i = 0; i < result.length; i++) {
+                const d = result[i].subProcessDesc?.trim()?.toLowerCase();
+                if (!d) continue;
+                if (verifyDescSet.has(d)) {
+                    const newName = makeUniqueName(result[i].subProcessDesc, rowProcessMap[newStartIdx + i], verifyDescSet);
+                    result[i] = { ...result[i], subProcessDesc: newName };
+                    hasdup = true;
+                }
+                verifyDescSet.add(result[i].subProcessDesc.trim().toLowerCase());
+            }
+
+            if (!hasdup) break;
+        }
+
+        return result;
+    };
+
+
+    // ═══════════ 两步骤模式：阶段1 - 章节识别 + 功能过程提取 ═══════════
+
+    // 步骤1a: 识别章节
+    const startChapterRecognition = async () => {
+        if (!documentContent) { showToast('请先上传文档'); return; }
+
+        setIsLoading(true);
+        setIsWaitingForAnalysis(false);
+        setCurrentStep(1);
+        setMessages([{ role: 'system', content: '📑 **章节识别中...**\n正在分析文档结构，识别各章节...' }]);
+
+        try {
+            const res = await axios.post('/api/split-chapters', { documentContent });
+            if (res.data.success) {
+                const chapterList = res.data.chapters;
+                setChapters(chapterList);
+
+                const chapterSummary = chapterList.map((ch, i) =>
+                    `${ch.selected ? '☑' : '☐'} **${i + 1}.** ${ch.title} (${ch.charCount}字)`
+                ).join('\n');
+
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: `## 📑 章节识别完成\n\n共识别到 **${chapterList.length}** 个章节：\n\n${chapterSummary}\n\n已自动选中包含功能描述的章节。`,
+                    showChapterActions: true
+                }]);
+                setCurrentStep(2); // 等待用户确认
+            }
+        } catch (error) {
+            // 章节识别失败，退回到全文模式
+            setMessages(prev => [...prev, {
+                role: 'system',
+                content: '⚠️ 章节自动识别失败，将使用全文模式提取功能过程。'
+            }]);
+            setChapters([{ title: '全文', content: documentContent, charCount: documentContent.length, selected: true }]);
+            await startFunctionExtractionFromChapters([{ title: '全文', content: documentContent, selected: true }]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // 切换章节选中状态
+    const toggleChapter = (index) => {
+        setChapters(prev => prev.map((ch, i) =>
+            i === index ? { ...ch, selected: !ch.selected } : ch
+        ));
+    };
+
+    // 步骤1b: 按章节提取功能过程
+    const startFunctionExtractionFromChapters = async (chapterList = null) => {
+        const selectedChapters = (chapterList || chapters).filter(ch => ch.selected);
+        if (selectedChapters.length === 0) {
+            showToast('请至少选择一个章节');
+            return;
+        }
+
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        abortControllerRef.current = new AbortController();
+        const signal = abortControllerRef.current.signal;
+
+        setIsLoading(true);
+        setCurrentStep(2);
+
+        let allFunctions = '';
+        let totalCount = 0;
+
+        try {
+            for (let i = 0; i < selectedChapters.length; i++) {
+                if (signal.aborted) return;
+                const chapter = selectedChapters[i];
+
+                setMessages(prev => {
+                    const filtered = prev.filter(m => !m.content.startsWith('🔍'));
+                    return [...filtered, {
+                        role: 'system',
+                        content: `🔍 **功能过程提取 (${i + 1}/${selectedChapters.length})**\n正在分析章节: ${chapter.title}...`
+                    }];
+                });
+
+                const res = await axios.post('/api/extract-functions', {
+                    documentContent: chapter.content,
+                    chapterName: chapter.title,
+                    userGuidelines,
+                    userConfig: getUserConfig()
+                }, { signal });
+
+                if (res.data.success && res.data.functionList) {
+                    // 给每条功能附上章节来源标记
+                    const chapterFunctions = res.data.functionList
+                        .split('\n')
+                        .filter(line => line.trim())
+                        .map(line => {
+                            // 如果行内没有章节标记，加上来源
+                            if (chapter.title !== '全文' && !line.includes(`【${chapter.title}】`)) {
+                                return line.replace(/##功能过程：/, `##功能过程：[${chapter.title}] `);
+                            }
+                            return line;
+                        })
+                        .join('\n');
+
+                    allFunctions += (allFunctions ? '\n' : '') + chapterFunctions;
+                    totalCount += res.data.count || 0;
+                }
+
+                // 章节间等待，避免频率限制
+                if (i < selectedChapters.length - 1) {
+                    try {
+                        await new Promise((resolve, reject) => {
+                            const t = setTimeout(resolve, 2000);
+                            signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                        });
+                    } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                }
+            }
+
+            setFunctionListText(allFunctions);
+            setCurrentStep(3);
+            setMessages(prev => {
+                const filtered = prev.filter(m => !m.content.startsWith('🔍'));
+                return [...filtered, {
+                    role: 'assistant',
+                    content: `## 📋 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${totalCount}** 个功能过程。\n\n请点击**「查看/编辑功能列表」**按钮检查，确认后点击**「开始COSMIC拆分」**。\n\n${allFunctions}`
+                }];
+            });
+        } catch (error) {
+            if (error.name === 'AbortError' || error.name === 'CanceledError') return;
+            if (allFunctions) {
+                // 部分成功
+                setFunctionListText(allFunctions);
+                setCurrentStep(3);
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: `⚠️ 功能过程提取部分完成（已提取 ${totalCount} 个）。\n错误: ${error.response?.data?.error || error.message}\n\n${allFunctions}`
+                }]);
+            } else {
+                setMessages(prev => [...prev, { role: 'assistant', content: `❌ 功能过程提取失败: ${error.response?.data?.error || error.message}` }]);
+                setCurrentStep(0);
+            }
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // 兼容：直接调用（全文模式 - 用于一键分析）
+    const startFunctionExtraction = async () => {
+        await startChapterRecognition();
+    };
+
+    // ═══════════ 两步骤模式：阶段2 - COSMIC拆分（多轮） ═══════════
+    const startCosmicSplit = async () => {
+        if (!functionListText) { showToast('请先提取功能过程列表'); return; }
+
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        abortControllerRef.current = new AbortController();
+        const signal = abortControllerRef.current.signal;
+
+        setIsLoading(true);
+        setCurrentStep(4);
+        setTableData([]);
+        setMessages(prev => [...prev, { role: 'system', content: '🔄 **阶段2：COSMIC拆分**\n正在对功能过程进行ERWX拆分...' }]);
+
+        let allTableData = [];
+        let round = 1;
+        const maxRounds = 5;
+
+        try {
+            while (round <= maxRounds) {
+                if (signal.aborted) return;
+
+                // 更新进度提示
+                if (round > 1) {
+                    const completedFuncs = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+                    setMessages(prev => {
+                        const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                        return [...filtered, {
+                            role: 'system',
+                            content: `🔄 **第 ${round} 轮拆分** | 已完成 ${completedFuncs.length} 个功能过程，继续拆分剩余功能...`
+                        }];
+                    });
+                }
+
+                const res = await axios.post('/api/cosmic-split', {
+                    functionList: functionListText,
+                    documentContent: documentContent.substring(0, 8000),
+                    userGuidelines,
+                    previousResults: allTableData,
+                    batchIndex: round - 1,
+                    totalBatches: maxRounds,
+                    userConfig: getUserConfig()
+                }, { signal });
+
+                if (res.data.success) {
+                    const newData = res.data.tableData || [];
+                    if (newData.length === 0) break; // AI没有返回新数据，结束
+
+                    // 去重合并
+                    const deduped = deduplicateData(allTableData, newData);
+                    if (deduped.length === 0) break; // 没有新的功能过程，结束
+
+                    allTableData = [...allTableData, ...deduped];
+                    setTableData(allTableData);
+                }
+
+                round++;
+
+                // 等待一下再继续
+                if (round <= maxRounds) {
+                    try {
+                        await new Promise((resolve, reject) => {
+                            const t = setTimeout(resolve, 1500);
+                            signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                        });
+                    } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                }
+            }
+
+            // 最终汇总
+            const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+            setMessages(prev => {
+                const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                return [...filtered, {
+                    role: 'assistant',
+                    content: `🎉 **COSMIC拆分完成！**\n\n经过 **${round - 1}** 轮拆分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
+                    showActions: true
+                }];
+            });
+            setCurrentStep(0);
+        } catch (error) {
+            if (error.name === 'AbortError' || error.name === 'CanceledError') return;
+            // 即使出错，如果已有部分数据也保留
+            if (allTableData.length > 0) {
+                const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+                setMessages(prev => {
+                    const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                    return [...filtered, {
+                        role: 'assistant',
+                        content: `⚠️ **拆分部分完成**（第 ${round} 轮出错: ${error.response?.data?.error || error.message}）\n\n已完成部分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）`,
+                        showActions: true
+                    }];
+                });
+            } else {
+                setMessages(prev => [...prev, { role: 'assistant', content: `❌ COSMIC拆分失败: ${error.response?.data?.error || error.message}` }]);
+            }
+            setCurrentStep(0);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // ═══════════ 一键完成模式 ═══════════
+    const startOneKeyAnalysis = async () => {
+        if (!documentContent) { showToast('请先上传文档'); return; }
+
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        abortControllerRef.current = new AbortController();
+        const signal = abortControllerRef.current.signal;
+
+        setIsLoading(true);
+        setIsWaitingForAnalysis(false);
+        setTableData([]);
+
+        let allTableData = [];
+        let round = 1;
+        const maxRounds = 10;
+
+        try {
+            // 阶段1: 文档理解
+            setMessages([{ role: 'system', content: '🔍 **阶段1：深度理解文档**\n正在分析文档结构...' }]);
+
+            let understanding = null;
+            try {
+                const understandRes = await axios.post('/api/understand-document', {
+                    documentContent,
+                    userConfig: getUserConfig()
+                }, { signal });
+
+                if (understandRes.data.success) {
+                    understanding = understandRes.data.understanding;
+                    const modules = understanding.coreModules || [];
+                    const moduleSummary = modules.map((m, i) => {
+                        const funcs = m.estimatedFunctions || [];
+                        const funcList = funcs.map(f =>
+                            typeof f === 'object' ? `${f.functionName} [${f.triggerType}]` : f
+                        ).join('、');
+                        return `**${i + 1}. ${m.moduleName}** - ${funcList}`;
+                    }).join('\n\n');
+
+                    setMessages([{
+                        role: 'assistant',
+                        content: `## 📋 文档理解完成\n\n**项目**: ${understanding.projectName || '未识别'}\n**预估功能数**: ${understanding.totalEstimatedFunctions || 30}\n\n### 核心模块\n${moduleSummary || '暂无'}\n\n🚀 **开始COSMIC拆分...**`
+                    }]);
+                    await new Promise((resolve, reject) => {
+                        const t = setTimeout(resolve, 1000);
+                        signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                    });
+                }
+            } catch (e) {
+                if (e.name === 'AbortError' || signal.aborted) return;
+                setMessages([{ role: 'system', content: '⚠️ 文档理解跳过，直接进行COSMIC拆分...' }]);
+            }
+
+            // 阶段2: 循环拆分
+            while (round <= maxRounds) {
+                if (signal.aborted) return;
+                const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+                if (uniqueFunctions.length >= minFunctionCount) break;
+
+                setMessages(prev => {
+                    const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                    return [...filtered, {
+                        role: 'system',
+                        content: `🔄 **第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / 目标 ${minFunctionCount} 个功能过程`
+                    }];
+                });
+
+                const response = await axios.post('/api/continue-analyze', {
+                    documentContent,
+                    previousResults: allTableData,
+                    round,
+                    targetFunctions: minFunctionCount,
+                    understanding,
+                    userGuidelines,
+                    userConfig: getUserConfig()
+                }, { signal });
+
+                if (response.data.success) {
+                    try {
+                        const tableRes = await axios.post('/api/parse-table', { markdown: response.data.reply });
+                        if (tableRes.data.success && tableRes.data.tableData.length > 0) {
+                            const deduped = deduplicateData(allTableData, tableRes.data.tableData);
+                            if (deduped.length > 0) {
+                                allTableData = [...allTableData, ...deduped];
+                                setTableData(allTableData);
+                            }
+                        }
+                    } catch (e) { /* parse error */ }
+
+                    if (response.data.isDone) break;
+                    const newFuncs = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+                    if (newFuncs.length >= minFunctionCount) break;
+                }
+
+                round++;
+                if (round <= maxRounds) {
+                    try {
+                        await new Promise((resolve, reject) => {
+                            const t = setTimeout(resolve, 1500);
+                            signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                        });
+                    } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                }
+            }
+
+            // 最终汇总
+            const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+            setMessages(prev => {
+                const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                return [...filtered, {
+                    role: 'assistant',
+                    content: `🎉 **分析完成！**\n\n经过 **${round}** 轮分析：\n- **${uniqueFunctions.length}** 个功能过程 ${uniqueFunctions.length >= minFunctionCount ? '✅' : '⚠️'}\n- **${allTableData.length}** 个子过程（CFP）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
+                    showActions: true
+                }];
+            });
+        } catch (error) {
+            if (error.name === 'AbortError' || error.name === 'CanceledError') return;
+            setMessages(prev => [...prev, { role: 'assistant', content: `❌ 分析失败: ${error.response?.data?.error || error.message}` }]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // ═══════════ 对话功能 ═══════════
+    const sendMessage = async () => {
+        if (!inputText.trim() || isLoading) return;
+        const userMessage = inputText.trim();
+        setInputText('');
+        setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+        setIsLoading(true);
+        setStreamingContent('');
+
+        try {
+            const response = await fetch('/api/chat/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    messages: [{ role: 'user', content: userMessage }],
+                    documentContent,
+                    userGuidelines,
+                    userConfig: getUserConfig()
+                })
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullContent = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const text = decoder.decode(value);
+                const lines = text.split('\n').filter(l => l.startsWith('data: '));
+
+                for (const line of lines) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') continue;
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (parsed.content) {
+                            fullContent += parsed.content;
+                            setStreamingContent(fullContent);
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+            }
+
+            if (fullContent) {
+                setMessages(prev => [...prev, { role: 'assistant', content: fullContent }]);
+                // 尝试解析表格数据
+                try {
+                    const tableRes = await axios.post('/api/parse-table', { markdown: fullContent });
+                    if (tableRes.data.success && tableRes.data.tableData.length > 0) {
+                        setTableData(prev => {
+                            const deduped = deduplicateData(prev, tableRes.data.tableData);
+                            return [...prev, ...deduped];
+                        });
+                    }
+                } catch (e) { /* ignore */ }
+            }
+            setStreamingContent('');
+        } catch (error) {
+            setMessages(prev => [...prev, { role: 'assistant', content: `❌ 对话失败: ${error.message}` }]);
+        } finally {
+            setIsLoading(false);
+            setStreamingContent('');
+        }
+    };
+
+    // ═══════════ 导出Excel ═══════════
+    const exportExcel = async () => {
+        if (tableData.length === 0) { showToast('没有可导出的数据'); return; }
+        try {
+            const response = await axios.post('/api/export-excel',
+                { tableData, filename: `COSMIC拆分_${documentName || '结果'}` },
+                { responseType: 'blob' }
+            );
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `COSMIC拆分_${documentName || '结果'}.xlsx`;
+            link.click();
+            window.URL.revokeObjectURL(url);
+            showToast('Excel导出成功');
+        } catch (error) {
+            showToast('导出失败: ' + error.message);
+        }
+    };
+
+    const copyContent = (content) => {
+        navigator.clipboard.writeText(content);
+        setCopied(true);
+        showToast('已复制到剪贴板');
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    const clearChat = () => {
+        setMessages([]);
+        setTableData([]);
+        setDocumentContent('');
+        setDocumentName('');
+        setFunctionListText('');
+        setCurrentStep(0);
+        setIsWaitingForAnalysis(false);
+    };
+
+    const stopAnalysis = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            setIsLoading(false);
+            showToast('分析已停止');
+        }
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    };
+
+    // ═══════════ 渲染 ═══════════
+    return (
+        <div className="app-container">
+            {/* Toast */}
+            {toastMessage && <div className="toast">{toastMessage}</div>}
+
+            {/* ═══ Sidebar ═══ */}
+            <div className="sidebar">
+                <div className="sidebar-header">
+                    <div className="sidebar-logo">
+                        <div className="sidebar-logo-icon">🔬</div>
+                        <div>
+                            <h1>COSMIC 拆分</h1>
+                            <p>智能功能规模分析</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="sidebar-content">
+                    {/* 模型选择 */}
+                    <div className="section-group">
+                        <div className="section-label">AI 模型</div>
+                        <div className="model-selector">
+                            <button
+                                className={`model-option ${selectedModel === 'deepseek-v3' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('deepseek-v3')}
+                            >
+                                <span className="model-option-dot" />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V3</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>671B · 通用推理</div>
+                                </div>
+                            </button>
+                            <button
+                                className={`model-option ${selectedModel === 'qwen3-coder' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('qwen3-coder')}
+                            >
+                                <span className="model-option-dot" />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>Qwen3-Coder</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>Plus · 代码逻辑</div>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* 拆分设置 */}
+                    <div className="section-group">
+                        <div className="section-label">拆分设置</div>
+                        <div className="setting-row">
+                            <span className="setting-label">目标功能过程数量</span>
+                            <input
+                                type="number"
+                                className="setting-input number-input"
+                                value={minFunctionCount}
+                                onChange={e => setMinFunctionCount(parseInt(e.target.value) || 10)}
+                                min={5}
+                                max={200}
+                            />
+                        </div>
+                        <div className="setting-row">
+                            <span className="setting-label">全局拆分要求（可选）</span>
+                            <textarea
+                                className="setting-input"
+                                placeholder="例如：仅拆分接口功能、重点关注XX模块..."
+                                value={userGuidelines}
+                                onChange={e => setUserGuidelines(e.target.value)}
+                                rows={2}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                {/* 状态栏 */}
+                <div className="status-bar">
+                    <span className={`status-dot ${apiStatus.hasApiKey ? 'online' : 'offline'}`} />
+                    <span>{apiStatus.hasApiKey ? '心流平台已连接' : '未连接'}</span>
+                </div>
+            </div>
+
+            {/* ═══ Main Content ═══ */}
+            <div className="main-content">
+                {/* Top Bar */}
+                <div className="top-bar">
+                    <div className="top-bar-left">
+                        <span className="top-bar-title">COSMIC 功能规模智能分析</span>
+                        {tableData.length > 0 && (
+                            <span className="top-bar-badge">
+                                {[...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))].length} 个功能过程 · {tableData.length} CFP
+                            </span>
+                        )}
+                    </div>
+                    <div className="top-bar-right">
+                        {tableData.length > 0 && (
+                            <>
+                                <button className="btn btn-secondary btn-sm" onClick={() => setShowTableView(true)}>
+                                    <Table size={14} /> 查看表格
+                                </button>
+                                <button className="btn btn-success btn-sm" onClick={exportExcel}>
+                                    <Download size={14} /> 导出Excel
+                                </button>
+                            </>
+                        )}
+                        <button className="btn btn-ghost btn-icon" onClick={clearChat} title="清空对话">
+                            <Trash2 size={16} />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Document Info Bar */}
+                {documentName && (
+                    <div className="doc-info-bar">
+                        <FileText size={14} style={{ color: 'var(--accent-violet)' }} />
+                        <span className="doc-info-name">{documentName}</span>
+                        <span className="doc-info-stats">{documentContent.length} 字符</span>
+                        <div className="doc-info-actions">
+                            <button className="btn btn-ghost btn-sm" onClick={() => setShowPreview(true)}>
+                                <Eye size={13} /> 预览
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Error Banner */}
+                {errorMessage && (
+                    <div className="error-banner">
+                        <AlertCircle size={16} />
+                        {errorMessage}
+                        <button className="btn btn-ghost btn-sm" onClick={() => setErrorMessage('')} style={{ marginLeft: 'auto' }}>
+                            <X size={14} />
+                        </button>
+                    </div>
+                )}
+
+                {/* Upload Progress */}
+                {uploadProgress > 0 && uploadProgress < 100 && (
+                    <div style={{ padding: '0 24px' }}>
+                        <div className="progress-bar-container">
+                            <div className="progress-bar" style={{ width: `${uploadProgress}%` }} />
+                        </div>
+                    </div>
+                )}
+
+                {/* Chat Area */}
+                <div className="chat-area">
+                    {messages.length === 0 && !documentContent ? (
+                        /* Welcome Screen */
+                        <div className="welcome-screen">
+                            <div className="welcome-icon">🔬</div>
+                            <h1 className="welcome-title">COSMIC 智能拆分系统</h1>
+                            <p className="welcome-subtitle">
+                                基于AI大模型的COSMIC功能规模度量工具，自动将需求文档拆分为标准的ERWX数据移动表格
+                            </p>
+                            <div className="welcome-features">
+                                <div className="welcome-feature">
+                                    <div className="welcome-feature-icon violet"><FileText size={18} /></div>
+                                    <h3>智能文档解析</h3>
+                                    <p>支持 .docx, .txt, .md 格式，自动提取功能描述</p>
+                                </div>
+                                <div className="welcome-feature">
+                                    <div className="welcome-feature-icon blue"><Brain size={18} /></div>
+                                    <h3>AI 深度拆分</h3>
+                                    <p>DeepSeek-V3 / Qwen3 双模型，精准ERWX拆分</p>
+                                </div>
+                                <div className="welcome-feature">
+                                    <div className="welcome-feature-icon cyan"><BarChart3 size={18} /></div>
+                                    <h3>专业级输出</h3>
+                                    <p>标准Markdown表格 + Excel导出，直接交付使用</p>
+                                </div>
+                            </div>
+
+                            {/* Upload Zone */}
+                            <div
+                                ref={dropZoneRef}
+                                className={`upload-zone ${isDragging ? 'dragging' : ''}`}
+                                onClick={() => fileInputRef.current?.click()}
+                                onDragEnter={handleDragEnter}
+                                onDragLeave={handleDragLeave}
+                                onDragOver={handleDragOver}
+                                onDrop={handleDrop}
+                            >
+                                <div className="upload-zone-icon">📂</div>
+                                <h3>上传需求文档</h3>
+                                <p>拖拽文件到此处，或点击选择文件</p>
+                                <p style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>支持 .docx, .txt, .md 格式</p>
+                            </div>
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".docx,.txt,.md"
+                                onChange={handleFileSelect}
+                                style={{ display: 'none' }}
+                            />
+                        </div>
+                    ) : (
+                        /* Messages */
+                        <>
+                            {messages.map((msg, idx) => (
+                                <div key={idx} className={`message ${msg.role}`}>
+                                    <div className="message-avatar">
+                                        {msg.role === 'assistant' ? <Bot size={16} /> :
+                                            msg.role === 'user' ? <User size={16} /> :
+                                                <Info size={16} />}
+                                    </div>
+                                    <div className="message-content">
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                        {msg.showActions && tableData.length > 0 && (
+                                            <div className="result-actions">
+                                                <button className="btn btn-primary btn-sm" onClick={() => setShowTableView(true)}>
+                                                    <Table size={14} /> 查看表格
+                                                </button>
+                                                <button className="btn btn-success btn-sm" onClick={exportExcel}>
+                                                    <Download size={14} /> 导出Excel
+                                                </button>
+                                            </div>
+                                        )}
+                                        {msg.showChapterActions && chapters.length > 0 && (
+                                            <div className="result-actions">
+                                                <button className="btn btn-secondary btn-sm" onClick={() => setShowChapterView(true)}>
+                                                    <Eye size={14} /> 查看/编辑章节
+                                                </button>
+                                                <button className="btn btn-primary btn-sm" onClick={() => startFunctionExtractionFromChapters()} disabled={isLoading}>
+                                                    <Target size={14} /> 确认·开始提取
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                            {streamingContent && (
+                                <div className="message assistant">
+                                    <div className="message-avatar"><Bot size={16} /></div>
+                                    <div className="message-content">
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
+                                    </div>
+                                </div>
+                            )}
+                            {isLoading && !streamingContent && (
+                                <div className="message assistant">
+                                    <div className="message-avatar"><Bot size={16} /></div>
+                                    <div className="message-content" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <Loader2 size={16} className="spinner" />
+                                        <span>AI 正在分析...</span>
+                                    </div>
+                                </div>
+                            )}
+                            <div ref={messagesEndRef} />
+                        </>
+                    )}
+                </div>
+
+                {/* Input Area */}
+                <div className="input-area">
+                    {/* Action Buttons */}
+                    {documentContent && (
+                        <div className="input-actions" style={{ marginBottom: 8 }}>
+                            <div className="input-actions-left">
+                                {/* 两步骤模式按钮 */}
+                                {currentStep === 0 && (
+                                    <>
+                                        <button
+                                            className="btn btn-primary"
+                                            onClick={startFunctionExtraction}
+                                            disabled={isLoading}
+                                        >
+                                            <Target size={14} /> 两步骤拆分
+                                        </button>
+                                        <button
+                                            className="btn btn-secondary"
+                                            onClick={startOneKeyAnalysis}
+                                            disabled={isLoading}
+                                        >
+                                            <Zap size={14} /> 一键拆分
+                                        </button>
+                                    </>
+                                )}
+                                {currentStep === 2 && (
+                                    <>
+                                        <button className="btn btn-secondary" onClick={() => setShowChapterView(true)}>
+                                            <Eye size={14} /> 查看/编辑章节
+                                        </button>
+                                        <button className="btn btn-primary" onClick={() => startFunctionExtractionFromChapters()} disabled={isLoading}>
+                                            <Target size={14} /> 确认章节·开始提取
+                                        </button>
+                                    </>
+                                )}
+                                {currentStep === 3 && (
+                                    <>
+                                        <button className="btn btn-secondary" onClick={() => setShowFunctionListEditor(true)}>
+                                            <Eye size={14} /> 查看/编辑功能列表
+                                        </button>
+                                        <button className="btn btn-primary" onClick={startCosmicSplit} disabled={isLoading}>
+                                            <Sparkles size={14} /> 开始COSMIC拆分
+                                        </button>
+                                    </>
+                                )}
+                                {isLoading && (
+                                    <button className="btn btn-secondary btn-sm" onClick={stopAnalysis}>
+                                        <X size={14} /> 停止分析
+                                    </button>
+                                )}
+                                {!documentContent && (
+                                    <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}>
+                                        <Upload size={14} /> 上传文档
+                                    </button>
+                                )}
+                            </div>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                                {documentContent && !isLoading && currentStep === 0 && (
+                                    <button className="btn btn-ghost btn-sm" onClick={() => fileInputRef.current?.click()}>
+                                        <RefreshCw size={13} /> 重新上传
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Chat Input */}
+                    <div className="input-row">
+                        <div className="input-wrapper">
+                            <textarea
+                                className="input-textarea"
+                                placeholder={documentContent ? '输入特殊要求或追问...' : '请先上传需求文档...'}
+                                value={inputText}
+                                onChange={e => setInputText(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                disabled={isLoading}
+                                rows={1}
+                            />
+                        </div>
+                        <button
+                            className="btn btn-primary btn-icon"
+                            onClick={sendMessage}
+                            disabled={isLoading || !inputText.trim()}
+                            title="发送消息"
+                        >
+                            <Send size={16} />
+                        </button>
+                    </div>
+
+                    {/* Hidden file input for re-upload */}
+                    {!messages.length && !documentContent ? null : (
+                        <input ref={fileInputRef} type="file" accept=".docx,.txt,.md" onChange={handleFileSelect} style={{ display: 'none' }} />
+                    )}
+                </div>
+            </div>
+
+            {/* ═══ Chapter Selection Modal ═══ */}
+            {showChapterView && (
+                <div className="table-view-overlay" onClick={() => setShowChapterView(false)}>
+                    <div className="table-view-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 700 }}>
+                        <div className="table-view-header">
+                            <h2><FileText size={18} /> 章节列表</h2>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                    已选 {chapters.filter(ch => ch.selected).length}/{chapters.length} 章节
+                                </span>
+                                <button className="btn btn-ghost btn-sm" onClick={() => {
+                                    const allSelected = chapters.every(ch => ch.selected);
+                                    setChapters(prev => prev.map(ch => ({ ...ch, selected: !allSelected })));
+                                }}>
+                                    {chapters.every(ch => ch.selected) ? '取消全选' : '全选'}
+                                </button>
+                                <button className="btn btn-ghost btn-icon" onClick={() => setShowChapterView(false)}>
+                                    <X size={18} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="table-view-body" style={{ padding: 16 }}>
+                            {chapters.map((ch, idx) => (
+                                <div
+                                    key={idx}
+                                    className="chapter-item"
+                                    style={{
+                                        display: 'flex', alignItems: 'flex-start', gap: 12,
+                                        padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+                                        border: `1px solid ${ch.selected ? 'var(--border-active)' : 'var(--border-subtle)'}`,
+                                        background: ch.selected ? 'rgba(108, 92, 231, 0.03)' : 'transparent',
+                                        marginBottom: 8, cursor: 'pointer',
+                                        transition: 'all 0.15s ease'
+                                    }}
+                                    onClick={() => toggleChapter(idx)}
+                                >
+                                    <input
+                                        type="checkbox" checked={ch.selected}
+                                        onChange={() => toggleChapter(idx)}
+                                        style={{ marginTop: 3, cursor: 'pointer', accentColor: 'var(--accent-violet)' }}
+                                    />
+                                    <div style={{ flex: 1 }}>
+                                        <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', marginBottom: 4 }}>
+                                            {idx + 1}. {ch.title}
+                                        </div>
+                                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                            {ch.charCount} 字
+                                        </div>
+                                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.5, maxHeight: 60, overflow: 'hidden' }}>
+                                            {ch.content.substring(0, 200)}...
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                            <button className="btn btn-secondary" onClick={() => setShowChapterView(false)}>
+                                关闭
+                            </button>
+                            <button className="btn btn-primary" onClick={() => { setShowChapterView(false); startFunctionExtractionFromChapters(); }} disabled={chapters.filter(ch => ch.selected).length === 0}>
+                                <Target size={14} /> 确认·开始提取 ({chapters.filter(ch => ch.selected).length}个章节)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ═══ Table View Modal ═══ */}
+            {showTableView && (
+                <div className="table-view-overlay" onClick={() => setShowTableView(false)}>
+                    <div className="table-view-panel" onClick={e => e.stopPropagation()}>
+                        <div className="table-view-header">
+                            <h2><Table size={18} /> COSMIC 拆分结果表格</h2>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                                <div className="table-view-stats">
+                                    <div className="table-stat">
+                                        功能过程: <span className="table-stat-value">{[...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))].length}</span>
+                                    </div>
+                                    <div className="table-stat">
+                                        子过程: <span className="table-stat-value">{tableData.length}</span>
+                                    </div>
+                                    <div className="table-stat">
+                                        <span className="dmt-badge dmt-e" style={{ width: 20, height: 20, fontSize: 10 }}>E</span> {tableData.filter(r => r.dataMovementType === 'E').length}
+                                    </div>
+                                    <div className="table-stat">
+                                        <span className="dmt-badge dmt-r" style={{ width: 20, height: 20, fontSize: 10 }}>R</span> {tableData.filter(r => r.dataMovementType === 'R').length}
+                                    </div>
+                                    <div className="table-stat">
+                                        <span className="dmt-badge dmt-w" style={{ width: 20, height: 20, fontSize: 10 }}>W</span> {tableData.filter(r => r.dataMovementType === 'W').length}
+                                    </div>
+                                    <div className="table-stat">
+                                        <span className="dmt-badge dmt-x" style={{ width: 20, height: 20, fontSize: 10 }}>X</span> {tableData.filter(r => r.dataMovementType === 'X').length}
+                                    </div>
+                                </div>
+                                <button className="btn btn-success btn-sm" onClick={exportExcel}>
+                                    <Download size={14} /> 导出Excel
+                                </button>
+                                <button className="btn btn-ghost btn-icon" onClick={() => setShowTableView(false)}>
+                                    <X size={18} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="table-view-body">
+                            <table className="data-table">
+                                <thead>
+                                    <tr>
+                                        <th style={{ width: '4%' }}>#</th>
+                                        <th style={{ width: '14%' }}>功能用户</th>
+                                        <th style={{ width: '8%' }}>触发事件</th>
+                                        <th style={{ width: '14%' }}>功能过程</th>
+                                        <th style={{ width: '16%' }}>子过程描述</th>
+                                        <th style={{ width: '6%' }}>类型</th>
+                                        <th style={{ width: '14%' }}>数据组</th>
+                                        <th style={{ width: '24%' }}>数据属性</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {tableData.map((row, idx) => (
+                                        <tr key={idx} className={row.dataMovementType === 'E' ? 'row-e' : ''}>
+                                            <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{idx + 1}</td>
+                                            <td>{row.dataMovementType === 'E' ? row.functionalUser : ''}</td>
+                                            <td>{row.dataMovementType === 'E' ? row.triggerEvent : ''}</td>
+                                            <td style={{ fontWeight: row.functionalProcess ? 600 : 400, color: row.functionalProcess ? 'var(--text-primary)' : '' }}>
+                                                {row.functionalProcess}
+                                            </td>
+                                            <td>{row.subProcessDesc}</td>
+                                            <td style={{ textAlign: 'center' }}>
+                                                <span className={`dmt-badge dmt-${row.dataMovementType?.toLowerCase()}`}>{row.dataMovementType}</span>
+                                            </td>
+                                            <td>{row.dataGroup}</td>
+                                            <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.dataAttributes}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ═══ Document Preview Modal ═══ */}
+            {showPreview && (
+                <div className="preview-overlay" onClick={() => setShowPreview(false)}>
+                    <div className="preview-panel" onClick={e => e.stopPropagation()}>
+                        <div className="preview-header">
+                            <h2>📄 {documentName}</h2>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <button className="btn btn-ghost btn-sm" onClick={() => copyContent(documentContent)}>
+                                    {copied ? <Check size={13} /> : <Copy size={13} />} 复制
+                                </button>
+                                <button className="btn btn-ghost btn-icon" onClick={() => setShowPreview(false)}>
+                                    <X size={16} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="preview-body">{documentContent}</div>
+                    </div>
+                </div>
+            )}
+
+            {/* ═══ Function List Editor Modal ═══ */}
+            {showFunctionListEditor && (
+                <div className="function-list-panel" onClick={() => setShowFunctionListEditor(false)}>
+                    <div className="function-list-content" onClick={e => e.stopPropagation()}>
+                        <div className="function-list-header">
+                            <h2>📋 功能过程列表编辑</h2>
+                            <button className="btn btn-ghost btn-icon" onClick={() => setShowFunctionListEditor(false)}>
+                                <X size={16} />
+                            </button>
+                        </div>
+                        <div className="function-list-body">
+                            <textarea
+                                className="function-list-textarea"
+                                value={functionListText}
+                                onChange={e => setFunctionListText(e.target.value)}
+                                placeholder="功能过程列表..."
+                            />
+                        </div>
+                        <div className="function-list-footer">
+                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                编辑完成后关闭此窗口，然后点击"开始COSMIC拆分"
+                            </span>
+                            <button className="btn btn-primary" onClick={() => setShowFunctionListEditor(false)}>
+                                <Check size={14} /> 确认
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+export default App;

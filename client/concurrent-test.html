@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMIC拆分 - 三路并发对比测试</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: #0a0e1a;
+            color: #e0e6f0;
+            min-height: 100vh;
+        }
+
+        .header {
+            padding: 20px 32px;
+            background: linear-gradient(135deg, #0f1629, #1a1f3a);
+            border-bottom: 1px solid rgba(99, 102, 241, .25);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header h1 {
+            font-size: 22px;
+            background: linear-gradient(135deg, #818cf8, #a78bfa);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header .subtitle {
+            color: #8892b0;
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        .upload-area {
+            max-width: 800px;
+            margin: 24px auto;
+            padding: 32px;
+            background: rgba(15, 22, 41, .8);
+            border: 2px dashed rgba(99, 102, 241, .3);
+            border-radius: 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: all .3s;
+        }
+
+        .upload-area:hover,
+        .upload-area.dragging {
+            border-color: #818cf8;
+            background: rgba(99, 102, 241, .08);
+        }
+
+        .upload-area h3 {
+            color: #a5b4fc;
+            margin-bottom: 8px;
+        }
+
+        .upload-area p {
+            color: #64748b;
+            font-size: 13px;
+        }
+
+        .upload-area input {
+            display: none;
+        }
+
+        .doc-info {
+            max-width: 800px;
+            margin: 0 auto 16px;
+            padding: 14px 20px;
+            background: rgba(16, 185, 129, .08);
+            border: 1px solid rgba(16, 185, 129, .25);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 14px;
+        }
+
+        .doc-info .name {
+            color: #34d399;
+            font-weight: 600;
+        }
+
+        .doc-info .meta {
+            color: #64748b;
+        }
+
+        .controls {
+            max-width: 800px;
+            margin: 0 auto 24px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 10px 22px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all .2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, .4);
+        }
+
+        .btn-primary:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, .15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, .25);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            padding: 0 24px 24px;
+        }
+
+        @media(max-width:1200px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: rgba(15, 22, 41, .9);
+            border: 1px solid rgba(99, 102, 241, .15);
+            border-radius: 16px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-header {
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(99, 102, 241, .1);
+        }
+
+        .panel-title {
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .panel-title .num {
+            display: inline-flex;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            margin-right: 6px;
+        }
+
+        .panel:nth-child(1) .num {
+            background: rgba(59, 130, 246, .2);
+            color: #60a5fa;
+        }
+
+        .panel:nth-child(2) .num {
+            background: rgba(16, 185, 129, .2);
+            color: #34d399;
+        }
+
+        .panel:nth-child(3) .num {
+            background: rgba(245, 158, 11, .2);
+            color: #fbbf24;
+        }
+
+        .status-badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .status-idle {
+            background: rgba(100, 116, 139, .15);
+            color: #94a3b8;
+        }
+
+        .status-running {
+            background: rgba(59, 130, 246, .15);
+            color: #60a5fa;
+            animation: pulse 1.5s infinite;
+        }
+
+        .status-done {
+            background: rgba(16, 185, 129, .15);
+            color: #34d399;
+        }
+
+        .status-error {
+            background: rgba(239, 68, 68, .15);
+            color: #f87171;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1
+            }
+
+            50% {
+                opacity: .6
+            }
+        }
+
+        /* Tab bar */
+        .tab-bar {
+            display: flex;
+            border-bottom: 1px solid rgba(99, 102, 241, .1);
+            background: rgba(0, 0, 0, .15);
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 8px;
+            text-align: center;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            color: #64748b;
+            border: none;
+            background: none;
+            transition: all .2s;
+            border-bottom: 2px solid transparent;
+        }
+
+        .tab-btn.active {
+            color: #a5b4fc;
+            border-bottom-color: #818cf8;
+            background: rgba(99, 102, 241, .05);
+        }
+
+        .tab-btn:hover {
+            color: #a5b4fc;
+        }
+
+        .panel-body {
+            padding: 14px 18px;
+            flex: 1;
+            overflow-y: auto;
+            max-height: 50vh;
+            font-size: 13px;
+            line-height: 1.7;
+        }
+
+        .panel-body::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        .panel-body::-webkit-scrollbar-thumb {
+            background: rgba(99, 102, 241, .3);
+            border-radius: 4px;
+        }
+
+        .panel-body.hidden {
+            display: none;
+        }
+
+        .log-line {
+            padding: 3px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, .03);
+        }
+
+        .log-line.info {
+            color: #60a5fa;
+        }
+
+        .log-line.success {
+            color: #34d399;
+        }
+
+        .log-line.error {
+            color: #f87171;
+        }
+
+        .log-line.data {
+            color: #94a3b8;
+        }
+
+        /* Result table */
+        .result-table-wrap {
+            padding: 8px;
+            overflow: auto;
+            max-height: 50vh;
+            font-size: 12px;
+        }
+
+        .result-table-wrap.hidden {
+            display: none;
+        }
+
+        .result-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 600px;
+        }
+
+        .result-table th {
+            background: rgba(99, 102, 241, .15);
+            color: #a5b4fc;
+            padding: 8px 6px;
+            text-align: left;
+            font-size: 11px;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            white-space: nowrap;
+        }
+
+        .result-table td {
+            padding: 6px;
+            border-bottom: 1px solid rgba(255, 255, 255, .04);
+            vertical-align: top;
+            line-height: 1.4;
+        }
+
+        .result-table tr:hover td {
+            background: rgba(99, 102, 241, .04);
+        }
+
+        .result-table .fp-name {
+            color: #a5b4fc;
+            font-weight: 600;
+        }
+
+        .result-table .type-badge {
+            display: inline-block;
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            text-align: center;
+            line-height: 22px;
+            font-weight: 700;
+            font-size: 11px;
+        }
+
+        .type-E {
+            background: rgba(59, 130, 246, .2);
+            color: #60a5fa;
+        }
+
+        .type-R {
+            background: rgba(16, 185, 129, .2);
+            color: #34d399;
+        }
+
+        .type-W {
+            background: rgba(245, 158, 11, .2);
+            color: #fbbf24;
+        }
+
+        .type-X {
+            background: rgba(139, 92, 246, .2);
+            color: #a78bfa;
+        }
+
+        .result-table .e-row {
+            background: rgba(59, 130, 246, .03);
+        }
+
+        .empty-msg {
+            color: #64748b;
+            text-align: center;
+            padding: 40px 20px;
+            font-size: 13px;
+        }
+
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            padding: 12px 18px;
+            border-top: 1px solid rgba(99, 102, 241, .1);
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 8px;
+            background: rgba(99, 102, 241, .05);
+            border-radius: 8px;
+        }
+
+        .stat-item .val {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .stat-item .label {
+            font-size: 10px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        .stat-item.e .val {
+            color: #60a5fa;
+        }
+
+        .stat-item.r .val {
+            color: #34d399;
+        }
+
+        .stat-item.w .val {
+            color: #fbbf24;
+        }
+
+        .stat-item.x .val {
+            color: #a78bfa;
+        }
+
+        .summary-bar {
+            max-width: calc(100% - 48px);
+            margin: 0 24px 24px;
+            padding: 18px 24px;
+            background: linear-gradient(135deg, rgba(99, 102, 241, .08), rgba(139, 92, 246, .08));
+            border: 1px solid rgba(99, 102, 241, .2);
+            border-radius: 14px;
+            display: none;
+        }
+
+        .summary-bar.visible {
+            display: block;
+        }
+
+        .summary-bar h3 {
+            color: #a5b4fc;
+            margin-bottom: 12px;
+            font-size: 16px;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+
+        .summary-card {
+            padding: 14px;
+            background: rgba(0, 0, 0, .2);
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .summary-card .card-title {
+            font-size: 12px;
+            color: #64748b;
+            margin-bottom: 6px;
+        }
+
+        .summary-card .card-val {
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        .summary-card .card-sub {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 4px;
+        }
+
+        /* Full result modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, .7);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal {
+            background: #111827;
+            border: 1px solid rgba(99, 102, 241, .25);
+            border-radius: 16px;
+            width: 95vw;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .modal-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid rgba(99, 102, 241, .15);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .modal-header h2 {
+            font-size: 18px;
+            color: #a5b4fc;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: #f87171;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 8px;
+        }
+
+        .modal-close:hover {
+            background: rgba(239, 68, 68, .15);
+        }
+
+        .modal-body {
+            overflow: auto;
+            flex: 1;
+            padding: 16px 24px;
+        }
+
+        .modal-body .result-table th {
+            background: #1e293b;
+        }
+
+        .timer {
+            color: #64748b;
+            font-size: 12px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header">
+        <div>
+            <h1>⚡ COSMIC拆分 三路并发对比测试</h1>
+            <div class="subtitle">同时运行3次独立拆分，对比AI输出的稳定性和一致性</div>
+        </div>
+        <div class="timer" id="globalTimer">00:00</div>
+    </div>
+
+    <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+        <h3>📄 拖拽或点击上传需求文档</h3>
+        <p>支持 .docx / .txt / .md 格式</p>
+        <input type="file" id="fileInput" accept=".docx,.txt,.md">
+    </div>
+
+    <div class="doc-info" id="docInfo" style="display:none">
+        <span>📄</span><span class="name" id="docName"></span><span class="meta" id="docMeta"></span>
+    </div>
+
+    <div class="controls" id="controls" style="display:none">
+        <button class="btn btn-primary" id="startBtn" onclick="startConcurrentTest()">🚀 启动三路并发拆分</button>
+        <button class="btn btn-danger" id="stopBtn" onclick="stopAll()" style="display:none">⏹ 停止</button>
+        <select id="modelSelect"
+            style="padding:8px 12px;border-radius:8px;background:#1a1f3a;color:#a5b4fc;border:1px solid rgba(99,102,241,.25);font-size:13px;">
+            <option value="deepseek-v3">DeepSeek-V3</option>
+            <option value="qwen3-coder-plus">Qwen3-Coder-Plus</option>
+        </select>
+        <label style="font-size:12px;color:#64748b;display:flex;align-items:center;gap:6px;">
+            目标功能数: <input type="number" id="targetCount" value="30" min="5" max="100"
+                style="width:60px;padding:6px;border-radius:6px;background:#1a1f3a;color:#a5b4fc;border:1px solid rgba(99,102,241,.25);text-align:center;">
+        </label>
+    </div>
+
+    <div class="summary-bar" id="summaryBar">
+        <h3>📊 三路对比汇总</h3>
+        <div class="summary-grid" id="summaryGrid"></div>
+    </div>
+
+    <div class="grid" id="panelGrid"></div>
+
+    <!-- Full screen result modal -->
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="modalTitle">拆分结果详情</h2>
+                <button class="modal-close" onclick="closeModal()">✕</button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
+    <script>
+        const API = 'http://localhost:3005';
+        let docContent = '', docFileName = '';
+        let abortControllers = [null, null, null];
+        let globalTimerInterval = null, globalStartTime = null;
+        const channelData = [{}, {}, {}];
+
+        // Build panels dynamically
+        const panelGrid = document.getElementById('panelGrid');
+        const labels = ['第一路拆分', '第二路拆分', '第三路拆分'];
+        for (let i = 0; i < 3; i++) {
+            panelGrid.innerHTML += `
+  <div class="panel" id="panel-${i}">
+    <div class="panel-header"><span class="panel-title"><span class="num">${i + 1}</span>${labels[i]}</span><span class="status-badge status-idle" id="status-${i}">待命</span></div>
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab(${i},'log')">📋 运行日志</button>
+      <button class="tab-btn" onclick="switchTab(${i},'table')">📊 拆分结果</button>
+    </div>
+    <div class="panel-body" id="log-${i}"><div class="log-line data">等待开始...</div></div>
+    <div class="result-table-wrap hidden" id="table-${i}"><div class="empty-msg">暂无拆分结果</div></div>
+    <div class="stats-row">
+      <div class="stat-item e"><div class="val" id="e-${i}">0</div><div class="label">Entry</div></div>
+      <div class="stat-item r"><div class="val" id="r-${i}">0</div><div class="label">Read</div></div>
+      <div class="stat-item w"><div class="val" id="w-${i}">0</div><div class="label">Write</div></div>
+      <div class="stat-item x"><div class="val" id="x-${i}">0</div><div class="label">eXit</div></div>
+    </div>
+  </div>`;
+        }
+
+        function switchTab(ch, tab) {
+            const panel = document.getElementById(`panel-${ch}`);
+            const tabs = panel.querySelectorAll('.tab-btn');
+            tabs[0].classList.toggle('active', tab === 'log');
+            tabs[1].classList.toggle('active', tab === 'table');
+            document.getElementById(`log-${ch}`).classList.toggle('hidden', tab !== 'log');
+            document.getElementById(`table-${ch}`).classList.toggle('hidden', tab !== 'table');
+        }
+
+        // File upload
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragging'); });
+        uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragging'));
+        uploadArea.addEventListener('drop', e => { e.preventDefault(); uploadArea.classList.remove('dragging'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+        fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+        async function handleFile(file) {
+            const fd = new FormData(); fd.append('file', file);
+            try {
+                const res = await fetch(`${API}/api/parse-word`, { method: 'POST', body: fd });
+                const data = await res.json();
+                if (data.success) {
+                    docContent = data.text; docFileName = data.filename;
+                    document.getElementById('docInfo').style.display = 'flex';
+                    document.getElementById('docName').textContent = data.filename;
+                    document.getElementById('docMeta').textContent = `${(data.fileSize / 1024).toFixed(1)}KB | ${data.wordCount}字`;
+                    document.getElementById('controls').style.display = 'flex';
+                    uploadArea.style.display = 'none';
+                } else alert('解析失败: ' + (data.error || '未知'));
+            } catch (e) { alert('上传失败: ' + e.message); }
+        }
+
+        function addLog(ch, msg, cls = 'data') {
+            if (ch === -1) return;
+            const el = document.getElementById(`log-${ch}`);
+            const div = document.createElement('div');
+            div.className = `log-line ${cls}`;
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            el.appendChild(div); el.scrollTop = el.scrollHeight;
+        }
+
+        function setStatus(ch, st, txt) {
+            const el = document.getElementById(`status-${ch}`);
+            el.className = `status-badge status-${st}`; el.textContent = txt;
+        }
+
+        function updateStats(ch, td) {
+            const c = { E: 0, R: 0, W: 0, X: 0 };
+            td.forEach(r => { if (c[r.dataMovementType] !== undefined) c[r.dataMovementType]++; });
+            document.getElementById(`e-${ch}`).textContent = c.E;
+            document.getElementById(`r-${ch}`).textContent = c.R;
+            document.getElementById(`w-${ch}`).textContent = c.W;
+            document.getElementById(`x-${ch}`).textContent = c.X;
+        }
+
+        function renderResultTable(ch, tableData) {
+            const wrap = document.getElementById(`table-${ch}`);
+            if (!tableData || tableData.length === 0) { wrap.innerHTML = '<div class="empty-msg">暂无拆分结果</div>'; return; }
+            let html = `<table class="result-table">
+    <thead><tr><th>功能用户</th><th>触发事件</th><th>功能过程</th><th>子过程描述</th><th>类型</th><th>数据组</th><th>数据属性</th></tr></thead><tbody>`;
+            let curUser = '', curTrigger = '', curProc = '';
+            tableData.forEach(r => {
+                if (r.functionalUser) curUser = r.functionalUser;
+                if (r.triggerEvent) curTrigger = r.triggerEvent;
+                if (r.functionalProcess) curProc = r.functionalProcess;
+                const isE = r.dataMovementType === 'E';
+                html += `<tr class="${isE ? 'e-row' : ''}">
+      <td>${isE ? curUser : ''}</td>
+      <td>${isE ? curTrigger : ''}</td>
+      <td class="${isE ? 'fp-name' : ''}">${r.functionalProcess || ''}</td>
+      <td>${r.subProcessDesc || ''}</td>
+      <td><span class="type-badge type-${r.dataMovementType}">${r.dataMovementType}</span></td>
+      <td>${r.dataGroup || ''}</td>
+      <td style="font-size:11px;color:#94a3b8;max-width:200px">${r.dataAttributes || ''}</td>
+    </tr>`;
+            });
+            html += '</tbody></table>';
+            wrap.innerHTML = html;
+        }
+
+        function startTimer() {
+            globalStartTime = Date.now();
+            globalTimerInterval = setInterval(() => {
+                const s = Math.floor((Date.now() - globalStartTime) / 1000);
+                document.getElementById('globalTimer').textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+            }, 1000);
+        }
+        function stopTimer() { clearInterval(globalTimerInterval); }
+
+        async function runOneChannel(ch, signal) {
+            const target = parseInt(document.getElementById('targetCount').value) || 30;
+            const model = document.getElementById('modelSelect').value;
+            const userConfig = { model, baseUrl: 'https://apis.iflow.cn/v1', provider: 'iflow' };
+            let allTableData = []; let round = 1; const maxRounds = 10; const startTime = Date.now();
+
+            setStatus(ch, 'running', '分析中...');
+            document.getElementById(`log-${ch}`).innerHTML = '';
+            addLog(ch, `开始拆分 | 模型: ${model} | 目标: ${target}个功能过程`, 'info');
+
+            // Step 1: Document understanding
+            addLog(ch, '阶段1: 深度理解文档...', 'info');
+            let understanding = null;
+            try {
+                const res = await fetch(`${API}/api/understand-document`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ documentContent: docContent, userConfig }) });
+                const data = await res.json();
+                if (data.success && data.understanding) { understanding = data.understanding; addLog(ch, `文档理解完成 | 项目: ${understanding.projectName || '?'} | 预估: ${understanding.totalEstimatedFunctions || '?'}个功能`, 'success'); }
+            } catch (e) { if (e.name === 'AbortError') return; addLog(ch, '文档理解跳过: ' + e.message, 'error'); }
+
+            // Step 2: Loop analysis
+            while (round <= maxRounds) {
+                if (signal.aborted) return;
+                const uf = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+                if (uf.length >= target) { addLog(ch, `已达目标 ${target} 个功能过程`, 'success'); break; }
+                addLog(ch, `第${round}轮拆分 | 已有 ${uf.length} 个功能过程 / ${allTableData.length} 条子过程`, 'info');
+                setStatus(ch, 'running', `第${round}轮...`);
+
+                try {
+                    const res = await fetch(`${API}/api/continue-analyze`, {
+                        method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ documentContent: docContent, previousResults: allTableData, round, targetFunctions: target, understanding, userConfig })
+                    });
+                    const data = await res.json();
+                    if (!data.success) { addLog(ch, '轮次失败: ' + (data.error || '?'), 'error'); break; }
+                    if (data.isDone) { addLog(ch, 'AI标记分析完成', 'success'); break; }
+
+                    const parseRes = await fetch(`${API}/api/parse-table`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markdown: data.reply }) });
+                    const parseData = await parseRes.json();
+                    if (parseData.success && parseData.tableData.length > 0) {
+                        const newRows = parseData.tableData;
+                        const existingProcs = new Set(allTableData.filter(r => r.dataMovementType === 'E' && r.functionalProcess).map(r => r.functionalProcess.toLowerCase().trim()));
+                        let skip = false; const filtered = [];
+                        for (const row of newRows) {
+                            if (row.dataMovementType === 'E' && row.functionalProcess) { skip = existingProcs.has(row.functionalProcess.toLowerCase().trim()); if (!skip) existingProcs.add(row.functionalProcess.toLowerCase().trim()); }
+                            if (!skip) filtered.push(row);
+                        }
+                        allTableData = [...allTableData, ...filtered];
+                        updateStats(ch, allTableData);
+                        renderResultTable(ch, allTableData);
+                        const nf = [...new Set(filtered.map(r => r.functionalProcess).filter(Boolean))];
+                        addLog(ch, `+${filtered.length}条数据 (+${nf.length}个新功能)`, 'success');
+                    } else { addLog(ch, '本轮未解析到数据', 'data'); }
+                } catch (e) { if (e.name === 'AbortError') return; addLog(ch, `错误: ${e.message}`, 'error'); break; }
+                round++;
+                if (round <= maxRounds) await new Promise(r => setTimeout(r, 1500));
+            }
+
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            const uf = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+            channelData[ch] = { tableData: allTableData, funcCount: uf.length, cfp: allTableData.length, elapsed, rounds: round - 1 };
+            addLog(ch, `✅ 完成! ${uf.length}个功能 / ${allTableData.length} CFP / ${elapsed}s`, 'success');
+            setStatus(ch, 'done', `完成 (${elapsed}s)`);
+            renderResultTable(ch, allTableData);
+            // Auto switch to result tab
+            switchTab(ch, 'table');
+        }
+
+        async function startConcurrentTest() {
+            if (!docContent) { alert('请先上传文档'); return; }
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').style.display = 'inline-flex';
+            document.getElementById('summaryBar').classList.remove('visible');
+            startTimer();
+
+            const promises = [];
+            for (let i = 0; i < 3; i++) {
+                abortControllers[i] = new AbortController();
+                promises.push(runOneChannel(i, abortControllers[i].signal).catch(e => {
+                    if (e.name !== 'AbortError') { addLog(i, '致命错误: ' + e.message, 'error'); setStatus(i, 'error', '失败'); }
+                }));
+            }
+            await Promise.allSettled(promises);
+            stopTimer();
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').style.display = 'none';
+            showSummary();
+        }
+
+        function stopAll() {
+            abortControllers.forEach(c => c && c.abort()); stopTimer();
+            for (let i = 0; i < 3; i++)setStatus(i, 'error', '已停止');
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').style.display = 'none';
+        }
+
+        function showSummary() {
+            const grid = document.getElementById('summaryGrid'); grid.innerHTML = '';
+            const lbl = ['第一路', '第二路', '第三路'];
+            const clr = ['#60a5fa', '#34d399', '#fbbf24'];
+            channelData.forEach((d, i) => {
+                if (!d.tableData) return;
+                grid.innerHTML += `<div class="summary-card">
+      <div class="card-title" style="color:${clr[i]}">${lbl[i]}</div>
+      <div class="card-val" style="color:${clr[i]}">${d.funcCount || 0}</div>
+      <div class="card-sub">功能过程 | ${d.cfp || 0} CFP | ${d.rounds || 0}轮 | ${d.elapsed || 0}s</div>
+      <button class="btn" style="margin-top:8px;padding:6px 14px;font-size:11px;background:rgba(99,102,241,.12);color:#a5b4fc;border:1px solid rgba(99,102,241,.25);" onclick="openModal(${i})">🔍 查看完整表格</button>
+    </div>`;
+            });
+            document.getElementById('summaryBar').classList.add('visible');
+        }
+
+        function openModal(ch) {
+            const d = channelData[ch];
+            if (!d || !d.tableData || d.tableData.length === 0) return;
+            document.getElementById('modalTitle').textContent = `${labels[ch]} - 拆分结果详情 (${d.funcCount}个功能 / ${d.cfp} CFP)`;
+            const body = document.getElementById('modalBody');
+            let html = `<table class="result-table">
+    <thead><tr><th style="width:30px">#</th><th>功能用户</th><th>触发事件</th><th>功能过程</th><th>子过程描述</th><th>类型</th><th>数据组</th><th>数据属性</th></tr></thead><tbody>`;
+            let curUser = '', curTrigger = '', num = 0;
+            d.tableData.forEach((r, idx) => {
+                if (r.functionalUser) curUser = r.functionalUser;
+                if (r.triggerEvent) curTrigger = r.triggerEvent;
+                const isE = r.dataMovementType === 'E';
+                if (isE) num++;
+                html += `<tr class="${isE ? 'e-row' : ''}">
+      <td style="color:#64748b;font-size:11px">${idx + 1}</td>
+      <td>${isE ? curUser : ''}</td><td>${isE ? curTrigger : ''}</td>
+      <td class="${isE ? 'fp-name' : ''}">${r.functionalProcess || ''}</td>
+      <td>${r.subProcessDesc || ''}</td>
+      <td><span class="type-badge type-${r.dataMovementType}">${r.dataMovementType}</span></td>
+      <td>${r.dataGroup || ''}</td>
+      <td style="font-size:11px;color:#94a3b8">${r.dataAttributes || ''}</td>
+    </tr>`;
+            });
+            html += '</tbody></table>';
+            body.innerHTML = html;
+            document.getElementById('modalOverlay').classList.add('show');
+        }
+
+        function closeModal() { document.getElementById('modalOverlay').classList.remove('show'); }
+        document.getElementById('modalOverlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+    </script>
+</body>
+
+</html>

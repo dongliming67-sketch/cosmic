@@ -1,0 +1,30 @@
+{
+    "name": "cosmic-split-system",
+    "version": "2.0.0",
+    "description": "COSMIC功能规模智能分析拆分系统 - 基于AI的软件功能规模度量工具",
+    "main": "server/index.js",
+    "scripts": {
+        "dev": "concurrently \"npm run server\" \"npm run client\"",
+        "server": "node server/index.js",
+        "client": "npm --prefix client run dev",
+        "build": "npm --prefix client run build",
+        "start": "node server/index.js",
+        "install-all": "npm install && cd client && npm install",
+        "render-build": "npm install && cd client && npm install && npm run build"
+    },
+    "dependencies": {
+        "cors": "^2.8.5",
+        "dotenv": "^16.3.1",
+        "exceljs": "^4.4.0",
+        "express": "^4.18.2",
+        "mammoth": "^1.6.0",
+        "multer": "^1.4.5-lts.1",
+        "openai": "^4.20.1"
+    },
+    "devDependencies": {
+        "concurrently": "^8.2.2"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}

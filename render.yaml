@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: cosmic-split-system
+    runtime: node
+    plan: free
+    buildCommand: npm run render-build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: IFLOW_API_KEY
+        sync: false
+      - key: IFLOW_BASE_URL
+        value: https://apis.iflow.cn/v1
+      - key: DEFAULT_MODEL
+        value: DeepSeek-V3-671B
