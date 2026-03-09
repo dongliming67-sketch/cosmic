@@ -28,13 +28,16 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // 服务前端静态文件
-const clientRootPath = path.join(__dirname, '..', 'client');
-app.use(express.static(clientRootPath));
 if (process.env.NODE_ENV === 'production') {
+    // 生产环境：只服务构建后的 dist 目录
     const clientBuildPath = path.join(__dirname, '..', 'client', 'dist');
     if (fs.existsSync(clientBuildPath)) {
         app.use(express.static(clientBuildPath));
     }
+} else {
+    // 开发环境：服务 client 根目录（配合 Vite 开发服务器）
+    const clientRootPath = path.join(__dirname, '..', 'client');
+    app.use(express.static(clientRootPath));
 }
 
 // 文件上传配置
