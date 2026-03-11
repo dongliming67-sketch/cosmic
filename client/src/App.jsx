@@ -968,13 +968,25 @@ function App() {
         });
     };
 
-    // 保存编辑 - 将结构化数据同步回 functionListText
+    // 保存编辑 - 将结构化数据同步回 functionListText，并恢复到待拆分状态
     const saveFunctionEdits = () => {
         const text = functionsToText(parsedFunctions);
         setFunctionListText(text);
         setShowFunctionListEditor(false);
         const selectedCount = parsedFunctions.filter(f => f.selected !== false).length;
         showToast(`已保存 ${selectedCount} 个功能过程`);
+
+        // 恢复到"待拆分"状态，使用户可以重新点击 "开始COSMIC拆分"
+        setCurrentStep(3);
+        setMessages(prev => {
+            // 移除旧的功能列表操作提示
+            const filtered = prev.filter(m => !m.showFunctionListActions);
+            return [...filtered, {
+                role: 'assistant',
+                content: `✅ **功能列表已更新**（共 ${selectedCount} 个功能过程）\n\n请点击**「开始COSMIC拆分」**按钮进行ERWX拆分。`,
+                showFunctionListActions: true
+            }];
+        });
     };
 
     // 打开编辑器时，从 functionListText 解析结构化数据
@@ -1459,6 +1471,16 @@ function App() {
                                         >
                                             <Zap size={14} /> 一键拆分
                                         </button>
+                                        {parsedFunctions.length > 0 && (
+                                            <>
+                                                <button className="btn btn-secondary" onClick={openFunctionEditor}>
+                                                    <Edit3 size={14} /> 编辑功能列表 ({parsedFunctions.filter(f => f.selected !== false).length})
+                                                </button>
+                                                <button className="btn btn-primary" onClick={startCosmicSplit} disabled={isLoading}>
+                                                    <Sparkles size={14} /> 重新COSMIC拆分
+                                                </button>
+                                            </>
+                                        )}
                                     </>
                                 )}
                                 {currentStep === 2 && (
