@@ -6,11 +6,13 @@ import {
     Upload, FileText, Send, Download, Settings, Bot, User, Loader2,
     CheckCircle, AlertCircle, X, Trash2, Copy, Check, Eye, Table,
     Zap, Sparkles, Brain, ChevronDown, Plus, BarChart3, RefreshCw,
-    FileSpreadsheet, Target, Info
+    FileSpreadsheet, Target, Info, Edit3, Scissors, GripVertical, Save
 } from 'lucide-react';
 
 function App() {
     // ═══════════ 状态管理 ═══════════
+    const idCounterRef = useRef(0);
+    const generateId = () => `func_${Date.now()}_${++idCounterRef.current}`;
     const [messages, setMessages] = useState([]);
     const [inputText, setInputText] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -28,6 +30,8 @@ function App() {
     const [toastMessage, setToastMessage] = useState('');
     const [isWaitingForAnalysis, setIsWaitingForAnalysis] = useState(false);
     const [userGuidelines, setUserGuidelines] = useState('');
+    const [coverageResult, setCoverageResult] = useState(null);
+    const [isVerifying, setIsVerifying] = useState(false);
 
     // 模型选择
     const [selectedModel, setSelectedModel] = useState(() => {
@@ -48,7 +52,9 @@ function App() {
 
     // 两步骤模式
     const [functionListText, setFunctionListText] = useState('');
+    const [parsedFunctions, setParsedFunctions] = useState([]); // 结构化功能列表
     const [showFunctionListEditor, setShowFunctionListEditor] = useState(false);
+    const [editingFunctionIndex, setEditingFunctionIndex] = useState(-1); // 当前编辑的功能索引
     const [currentStep, setCurrentStep] = useState(0); // 0=未开始, 1=章节识别, 2=提取中, 3=待确认, 4=拆分中
 
     // 章节模式
@@ -457,12 +463,27 @@ function App() {
             }
 
             setFunctionListText(allFunctions);
+            // 自动解析为结构化数据
+            const parsed = parseFunctionListText(allFunctions);
+            setParsedFunctions(parsed);
             setCurrentStep(3);
+
+            // 构建简洁的统计摘要，不再dump原始文本
+            const triggerStats = {};
+            parsed.forEach(f => {
+                const trigger = f.triggerEvent || '未知';
+                triggerStats[trigger] = (triggerStats[trigger] || 0) + 1;
+            });
+            const triggerSummary = Object.entries(triggerStats)
+                .map(([k, v]) => `${k}: ${v}个`)
+                .join(' | ');
+
             setMessages(prev => {
                 const filtered = prev.filter(m => !m.content.startsWith('🔍'));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `## 📋 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${totalCount}** 个功能过程。\n\n请点击**「查看/编辑功能列表」**按钮检查，确认后点击**「开始COSMIC拆分」**。\n\n${allFunctions}`
+                    content: `## 📋 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${parsed.length}** 个功能过程。\n\n📊 触发类型分布：${triggerSummary}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
+                    showFunctionListActions: true
                 }];
             });
         } catch (error) {
@@ -470,10 +491,13 @@ function App() {
             if (allFunctions) {
                 // 部分成功
                 setFunctionListText(allFunctions);
+                const parsed = parseFunctionListText(allFunctions);
+                setParsedFunctions(parsed);
                 setCurrentStep(3);
                 setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `⚠️ 功能过程提取部分完成（已提取 ${totalCount} 个）。\n错误: ${error.response?.data?.error || error.message}\n\n${allFunctions}`
+                    content: `⚠️ 功能过程提取部分完成（已提取 ${parsed.length} 个）。\n错误: ${error.response?.data?.error || error.message}\n\n请点击**「查看/编辑功能列表」**按钮检查。`,
+                    showFunctionListActions: true
                 }]);
             } else {
                 setMessages(prev => [...prev, { role: 'assistant', content: `❌ 功能过程提取失败: ${error.response?.data?.error || error.message}` }]);
@@ -491,7 +515,13 @@ function App() {
 
     // ═══════════ 两步骤模式：阶段2 - COSMIC拆分（多轮） ═══════════
     const startCosmicSplit = async () => {
-        if (!functionListText) { showToast('请先提取功能过程列表'); return; }
+        // 先同步结构化数据回 text
+        let textForSplit = functionListText;
+        if (parsedFunctions.length > 0) {
+            textForSplit = functionsToText(parsedFunctions);
+            setFunctionListText(textForSplit);
+        }
+        if (!textForSplit) { showToast('请先提取功能过程列表'); return; }
 
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
@@ -523,7 +553,7 @@ function App() {
                 }
 
                 const res = await axios.post('/api/cosmic-split', {
-                    functionList: functionListText,
+                    functionList: textForSplit,
                     documentContent: documentContent.substring(0, 8000),
                     userGuidelines,
                     previousResults: allTableData,
@@ -604,7 +634,8 @@ function App() {
 
         let allTableData = [];
         let round = 1;
-        const maxRounds = 10;
+        const maxRounds = 15;
+        let lastCoverage = null;
 
         try {
             // 阶段1: 文档理解
@@ -646,7 +677,6 @@ function App() {
             while (round <= maxRounds) {
                 if (signal.aborted) return;
                 const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
-                if (uniqueFunctions.length >= minFunctionCount) break;
 
                 setMessages(prev => {
                     const filtered = prev.filter(m => !m.content.startsWith('🔄'));
@@ -663,7 +693,8 @@ function App() {
                     targetFunctions: minFunctionCount,
                     understanding,
                     userGuidelines,
-                    userConfig: getUserConfig()
+                    userConfig: getUserConfig(),
+                    coverageVerification: lastCoverage
                 }, { signal });
 
                 if (response.data.success) {
@@ -679,8 +710,7 @@ function App() {
                     } catch (e) { /* parse error */ }
 
                     if (response.data.isDone) break;
-                    const newFuncs = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
-                    if (newFuncs.length >= minFunctionCount) break;
+                    lastCoverage = response.data.coverageVerification || null;
                 }
 
                 round++;
@@ -811,6 +841,7 @@ function App() {
         setDocumentContent('');
         setDocumentName('');
         setFunctionListText('');
+        setParsedFunctions([]);
         setCurrentStep(0);
         setIsWaitingForAnalysis(false);
     };
@@ -827,6 +858,307 @@ function App() {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             sendMessage();
+        }
+    };
+
+    // ═══════════ 功能列表结构化管理 ═══════════
+
+    // 将 ##格式的纯文本 解析为结构化数组
+    const parseFunctionListText = (text) => {
+        if (!text) return [];
+        const functions = [];
+        // 按 ##触发事件 分隔
+        const blocks = text.split(/(?=##\s*触发事件[：:])/).filter(b => b.trim());
+        for (const block of blocks) {
+            const lines = block.trim().split('\n');
+            const func = {
+                id: `func_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                triggerEvent: '',
+                functionalUser: '',
+                functionName: '',
+                description: '',
+                selected: true
+            };
+            for (const line of lines) {
+                const t = line.trim();
+                if (t.match(/^##\s*触发事件[：:]/)) {
+                    func.triggerEvent = t.replace(/^##\s*触发事件[：:]\s*/, '').trim();
+                } else if (t.match(/^##\s*功能用户[：:]/)) {
+                    func.functionalUser = t.replace(/^##\s*功能用户[：:]\s*/, '').trim();
+                } else if (t.match(/^##\s*功能过程[：:]/) && !t.match(/描述/)) {
+                    func.functionName = t.replace(/^##\s*功能过程[：:]\s*/, '').replace(/^\[.*?\]\s*/, '').trim();
+                } else if (t.match(/^##\s*功能过程描述[：:]/)) {
+                    func.description = t.replace(/^##\s*功能过程描述[：:]\s*/, '').trim();
+                }
+            }
+            if (func.functionName) {
+                functions.push(func);
+            }
+        }
+        return functions;
+    };
+
+    // 将结构化数组转回 ##格式纯文本
+    const functionsToText = (functions) => {
+        return functions
+            .filter(f => f.selected !== false)
+            .map(f => {
+                return `##触发事件：${f.triggerEvent || '用户触发'}\n##功能用户：${f.functionalUser || '发起者：用户 接收者：用户'}\n##功能过程：${f.functionName}\n##功能过程描述：${f.description || ''}`;
+            })
+            .join('\n\n');
+    };
+
+    // 更新某个功能的某个字段
+    const updateFunction = (index, field, value) => {
+        setParsedFunctions(prev => {
+            const updated = [...prev];
+            updated[index] = { ...updated[index], [field]: value };
+            return updated;
+        });
+    };
+
+    // 删除某个功能
+    const deleteFunction = (index) => {
+        setParsedFunctions(prev => prev.filter((_, i) => i !== index));
+        showToast('已删除功能过程');
+    };
+
+    // 新增一个空功能
+    const addFunction = () => {
+        setParsedFunctions(prev => [...prev, {
+            id: generateId(),
+            triggerEvent: '用户触发',
+            functionalUser: '发起者：用户 接收者：用户',
+            functionName: '',
+            description: '',
+            selected: true
+        }]);
+        // 自动聚焦到最后一个
+        setTimeout(() => {
+            const editor = document.querySelector('.func-editor-body');
+            if (editor) editor.scrollTop = editor.scrollHeight;
+        }, 100);
+    };
+
+    // 拆分一个功能为两个
+    const splitFunction = (index) => {
+        setParsedFunctions(prev => {
+            const updated = [...prev];
+            const original = updated[index];
+            const clone = {
+                id: generateId(),
+                triggerEvent: original.triggerEvent,
+                functionalUser: original.functionalUser,
+                functionName: original.functionName + '（拆分）',
+                description: original.description,
+                selected: true
+            };
+            updated.splice(index + 1, 0, clone);
+            return updated;
+        });
+        showToast('已拆分，请编辑新功能过程名称');
+    };
+
+    // 切换功能选中状态
+    const toggleFunctionSelected = (index) => {
+        setParsedFunctions(prev => {
+            const updated = [...prev];
+            updated[index] = { ...updated[index], selected: !updated[index].selected };
+            return updated;
+        });
+    };
+
+    // 保存编辑 - 将结构化数据同步回 functionListText
+    const saveFunctionEdits = () => {
+        const text = functionsToText(parsedFunctions);
+        setFunctionListText(text);
+        setShowFunctionListEditor(false);
+        const selectedCount = parsedFunctions.filter(f => f.selected !== false).length;
+        showToast(`已保存 ${selectedCount} 个功能过程`);
+    };
+
+    // 打开编辑器时，从 functionListText 解析结构化数据
+    const openFunctionEditor = () => {
+        if (parsedFunctions.length === 0 && functionListText) {
+            const parsed = parseFunctionListText(functionListText);
+            setParsedFunctions(parsed);
+        }
+        setShowFunctionListEditor(true);
+    };
+
+    // ═══════════ 覆盖度验证 + 补充提取 ═══════════
+    const verifyCoverage = async () => {
+        if (!documentContent || tableData.length === 0) {
+            showToast('请先完成COSMIC拆分后再验证');
+            return;
+        }
+
+        const extractedFunctions = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
+        if (extractedFunctions.length === 0) {
+            showToast('没有可验证的功能过程');
+            return;
+        }
+
+        setIsVerifying(true);
+        setMessages(prev => [...prev, {
+            role: 'system',
+            content: `🔍 **覆盖度验证中...**\n正在检查 ${extractedFunctions.length} 个功能过程是否覆盖了文档中的所有功能...`
+        }]);
+
+        try {
+            const res = await axios.post('/api/verify-coverage', {
+                documentContent,
+                extractedFunctions,
+                userConfig: getUserConfig()
+            });
+
+            if (res.data.success && res.data.verification) {
+                const v = res.data.verification;
+                setCoverageResult(v);
+
+                const scoreEmoji = v.coverageScore >= 90 ? '🟢' : v.coverageScore >= 70 ? '🟡' : '🔴';
+                const missedList = (v.missedFunctions || []).map((f, i) =>
+                    `${i + 1}. **${f.functionName}** (${f.triggerType || '未知触发'})\n   📝 ${f.reason || ''}\n   📄 文档依据: "${f.documentEvidence || '无'}"`
+                ).join('\n\n');
+
+                const suggestionsText = (v.suggestions || []).map((s, i) => `${i + 1}. ${s}`).join('\n');
+
+                let resultContent = `## ${scoreEmoji} 覆盖度验证结果\n\n`;
+                resultContent += `- **覆盖度评分**: ${v.coverageScore}/100\n`;
+                resultContent += `- **文档预估功能数**: ${v.totalDocumentFunctions || '?'}\n`;
+                resultContent += `- **已提取功能数**: ${v.extractedCount || extractedFunctions.length}\n`;
+                resultContent += `- **遗漏功能数**: ${v.missedFunctions?.length || 0}\n\n`;
+
+                if (v.missedFunctions && v.missedFunctions.length > 0) {
+                    resultContent += `### ⚠️ 遗漏的功能过程:\n\n${missedList}\n\n`;
+                }
+                if (v.suggestions && v.suggestions.length > 0) {
+                    resultContent += `### 💡 改进建议:\n${suggestionsText}\n\n`;
+                }
+
+                if (v.missedFunctions && v.missedFunctions.length > 0) {
+                    resultContent += `---\n\n点击 **「补充提取」** 按钮可自动提取遗漏的功能过程。`;
+                } else {
+                    resultContent += `\n✅ 功能过程提取完整度良好！`;
+                }
+
+                setMessages(prev => {
+                    const filtered = prev.filter(m => !m.content.startsWith('🔍 **覆盖度验证中'));
+                    return [...filtered, {
+                        role: 'assistant',
+                        content: resultContent,
+                        showCoverageActions: v.missedFunctions && v.missedFunctions.length > 0
+                    }];
+                });
+
+                // 如果覆盖度低，自动提示
+                if (v.coverageScore < 90 && v.missedFunctions && v.missedFunctions.length > 0) {
+                    showToast(`发现 ${v.missedFunctions.length} 个遗漏功能，建议补充提取`);
+                }
+            }
+        } catch (error) {
+            setMessages(prev => {
+                const filtered = prev.filter(m => !m.content.startsWith('🔍 **覆盖度验证中'));
+                return [...filtered, {
+                    role: 'assistant',
+                    content: `❌ 覆盖度验证失败: ${error.response?.data?.error || error.message}`
+                }];
+            });
+        } finally {
+            setIsVerifying(false);
+        }
+    };
+
+    const extractSupplementary = async () => {
+        if (!coverageResult || !coverageResult.missedFunctions || coverageResult.missedFunctions.length === 0) {
+            showToast('没有需要补充提取的功能');
+            return;
+        }
+
+        const existingFunctions = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
+
+        setIsLoading(true);
+        setMessages(prev => [...prev, {
+            role: 'system',
+            content: `🔄 **补充提取中...**\n正在针对 ${coverageResult.missedFunctions.length} 个遗漏功能进行补充分析...`
+        }]);
+
+        try {
+            // 第一步：补充提取功能过程
+            const extractRes = await axios.post('/api/extract-supplementary', {
+                documentContent,
+                existingFunctions,
+                missedFunctions: coverageResult.missedFunctions,
+                userConfig: getUserConfig()
+            });
+
+            if (extractRes.data.success && extractRes.data.functions && extractRes.data.functions.length > 0) {
+                const newFunctions = extractRes.data.functions;
+                const newFuncListText = extractRes.data.functionList;
+
+                setMessages(prev => {
+                    const filtered = prev.filter(m => !m.content.startsWith('🔄 **补充提取中'));
+                    return [...filtered, {
+                        role: 'system',
+                        content: `✅ 补充提取到 **${newFunctions.length}** 个新功能过程，正在进行COSMIC拆分...`
+                    }];
+                });
+
+                // 第二步：对补充的功能进行COSMIC拆分
+                const splitRes = await axios.post('/api/cosmic-split', {
+                    functionList: newFuncListText,
+                    documentContent: documentContent.substring(0, 8000),
+                    userGuidelines,
+                    previousResults: tableData,
+                    batchIndex: 0,
+                    totalBatches: 1,
+                    userConfig: getUserConfig()
+                });
+
+                if (splitRes.data.success && splitRes.data.tableData && splitRes.data.tableData.length > 0) {
+                    const deduped = deduplicateData(tableData, splitRes.data.tableData);
+                    if (deduped.length > 0) {
+                        const newTableData = [...tableData, ...deduped];
+                        setTableData(newTableData);
+
+                        const newTotalFuncs = [...new Set(newTableData.map(r => r.functionalProcess).filter(Boolean))].length;
+                        setMessages(prev => {
+                            const filtered = prev.filter(m => !m.content.startsWith('✅ 补充提取到'));
+                            return [...filtered, {
+                                role: 'assistant',
+                                content: `🎉 **补充拆分完成！**\n\n- 新增 **${deduped.filter(r => r.dataMovementType === 'E').length}** 个功能过程\n- 新增 **${deduped.length}** 个子过程（CFP）\n- 总计 **${newTotalFuncs}** 个功能过程 / **${newTableData.length}** CFP\n\n可继续点击 **「覆盖度验证」** 再次检查完整度。`,
+                                showActions: true
+                            }];
+                        });
+                        setCoverageResult(null);
+                    } else {
+                        setMessages(prev => [...prev, {
+                            role: 'assistant',
+                            content: '⚠️ 补充的功能过程与已有数据重复，未产生新数据。'
+                        }]);
+                    }
+                } else {
+                    setMessages(prev => [...prev, {
+                        role: 'assistant',
+                        content: '⚠️ 补充功能的COSMIC拆分未返回有效数据，请尝试手动补充。'
+                    }]);
+                }
+            } else {
+                setMessages(prev => {
+                    const filtered = prev.filter(m => !m.content.startsWith('🔄 **补充提取中'));
+                    return [...filtered, {
+                        role: 'assistant',
+                        content: '⚠️ 补充提取未发现新的功能过程。可能遗漏的功能已在已有列表中被不同名称覆盖。'
+                    }];
+                });
+            }
+        } catch (error) {
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `❌ 补充提取失败: ${error.response?.data?.error || error.message}`
+            }]);
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -1044,6 +1376,19 @@ function App() {
                                                 <button className="btn btn-success btn-sm" onClick={exportExcel}>
                                                     <Download size={14} /> 导出Excel
                                                 </button>
+                                                <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying || isLoading}>
+                                                    {isVerifying ? <Loader2 size={14} className="spinner" /> : <Target size={14} />} 覆盖度验证
+                                                </button>
+                                            </div>
+                                        )}
+                                        {msg.showCoverageActions && (
+                                            <div className="result-actions">
+                                                <button className="btn btn-primary btn-sm" onClick={extractSupplementary} disabled={isLoading}>
+                                                    <Plus size={14} /> 补充提取
+                                                </button>
+                                                <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying || isLoading}>
+                                                    <RefreshCw size={14} /> 重新验证
+                                                </button>
                                             </div>
                                         )}
                                         {msg.showChapterActions && chapters.length > 0 && (
@@ -1053,6 +1398,16 @@ function App() {
                                                 </button>
                                                 <button className="btn btn-primary btn-sm" onClick={() => startFunctionExtractionFromChapters()} disabled={isLoading}>
                                                     <Target size={14} /> 确认·开始提取
+                                                </button>
+                                            </div>
+                                        )}
+                                        {msg.showFunctionListActions && parsedFunctions.length > 0 && (
+                                            <div className="result-actions">
+                                                <button className="btn btn-primary btn-sm" onClick={openFunctionEditor}>
+                                                    <Edit3 size={14} /> 查看/编辑功能列表
+                                                </button>
+                                                <button className="btn btn-success btn-sm" onClick={startCosmicSplit} disabled={isLoading}>
+                                                    <Sparkles size={14} /> 确认·开始COSMIC拆分
                                                 </button>
                                             </div>
                                         )}
@@ -1118,8 +1473,8 @@ function App() {
                                 )}
                                 {currentStep === 3 && (
                                     <>
-                                        <button className="btn btn-secondary" onClick={() => setShowFunctionListEditor(true)}>
-                                            <Eye size={14} /> 查看/编辑功能列表
+                                        <button className="btn btn-secondary" onClick={openFunctionEditor}>
+                                            <Edit3 size={14} /> 查看/编辑功能列表 ({parsedFunctions.filter(f => f.selected !== false).length})
                                         </button>
                                         <button className="btn btn-primary" onClick={startCosmicSplit} disabled={isLoading}>
                                             <Sparkles size={14} /> 开始COSMIC拆分
@@ -1138,6 +1493,11 @@ function App() {
                                 )}
                             </div>
                             <div style={{ display: 'flex', gap: 4 }}>
+                                {tableData.length > 0 && !isLoading && currentStep === 0 && (
+                                    <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying}>
+                                        {isVerifying ? <Loader2 size={13} className="spinner" /> : <Target size={13} />} 覆盖度验证
+                                    </button>
+                                )}
                                 {documentContent && !isLoading && currentStep === 0 && (
                                     <button className="btn btn-ghost btn-sm" onClick={() => fileInputRef.current?.click()}>
                                         <RefreshCw size={13} /> 重新上传
@@ -1337,31 +1697,130 @@ function App() {
                 </div>
             )}
 
-            {/* ═══ Function List Editor Modal ═══ */}
+            {/* ═══ Function List Editor Modal (Structured) ═══ */}
             {showFunctionListEditor && (
                 <div className="function-list-panel" onClick={() => setShowFunctionListEditor(false)}>
-                    <div className="function-list-content" onClick={e => e.stopPropagation()}>
-                        <div className="function-list-header">
-                            <h2>📋 功能过程列表编辑</h2>
-                            <button className="btn btn-ghost btn-icon" onClick={() => setShowFunctionListEditor(false)}>
-                                <X size={16} />
-                            </button>
+                    <div className="func-editor-container" onClick={e => e.stopPropagation()}>
+                        <div className="func-editor-header">
+                            <div className="func-editor-header-left">
+                                <h2><Edit3 size={18} /> 功能过程列表编辑</h2>
+                                <span className="func-editor-count">
+                                    共 {parsedFunctions.length} 个 · 已选 {parsedFunctions.filter(f => f.selected !== false).length} 个
+                                </span>
+                            </div>
+                            <div className="func-editor-header-right">
+                                <button className="btn btn-secondary btn-sm" onClick={addFunction}>
+                                    <Plus size={14} /> 新增功能
+                                </button>
+                                <button className="btn btn-ghost btn-icon" onClick={() => setShowFunctionListEditor(false)}>
+                                    <X size={18} />
+                                </button>
+                            </div>
                         </div>
-                        <div className="function-list-body">
-                            <textarea
-                                className="function-list-textarea"
-                                value={functionListText}
-                                onChange={e => setFunctionListText(e.target.value)}
-                                placeholder="功能过程列表..."
-                            />
+
+                        {/* 表格头 */}
+                        <div className="func-editor-table-header">
+                            <div className="func-col func-col-check">选中</div>
+                            <div className="func-col func-col-idx">#</div>
+                            <div className="func-col func-col-trigger">触发事件</div>
+                            <div className="func-col func-col-user">功能用户</div>
+                            <div className="func-col func-col-name">功能过程名称</div>
+                            <div className="func-col func-col-desc">功能过程描述</div>
+                            <div className="func-col func-col-actions">操作</div>
                         </div>
-                        <div className="function-list-footer">
-                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                                编辑完成后关闭此窗口，然后点击"开始COSMIC拆分"
-                            </span>
-                            <button className="btn btn-primary" onClick={() => setShowFunctionListEditor(false)}>
-                                <Check size={14} /> 确认
-                            </button>
+
+                        <div className="func-editor-body">
+                            {parsedFunctions.length === 0 ? (
+                                <div className="func-editor-empty">
+                                    <p>暂无功能过程数据</p>
+                                    <button className="btn btn-primary btn-sm" onClick={addFunction}>
+                                        <Plus size={14} /> 添加第一个功能过程
+                                    </button>
+                                </div>
+                            ) : (
+                                parsedFunctions.map((func, idx) => (
+                                    <div
+                                        key={func.id || idx}
+                                        className={`func-editor-row ${func.selected === false ? 'disabled' : ''} ${editingFunctionIndex === idx ? 'editing' : ''}`}
+                                    >
+                                        <div className="func-col func-col-check">
+                                            <input
+                                                type="checkbox"
+                                                checked={func.selected !== false}
+                                                onChange={() => toggleFunctionSelected(idx)}
+                                                style={{ accentColor: 'var(--accent-violet)', cursor: 'pointer' }}
+                                            />
+                                        </div>
+                                        <div className="func-col func-col-idx">
+                                            <span className="func-idx-badge">{idx + 1}</span>
+                                        </div>
+                                        <div className="func-col func-col-trigger">
+                                            <select
+                                                className="func-select"
+                                                value={func.triggerEvent || '用户触发'}
+                                                onChange={e => updateFunction(idx, 'triggerEvent', e.target.value)}
+                                            >
+                                                <option value="用户触发">用户触发</option>
+                                                <option value="时钟触发">时钟触发</option>
+                                                <option value="接口调用触发">接口调用触发</option>
+                                            </select>
+                                        </div>
+                                        <div className="func-col func-col-user">
+                                            <input
+                                                className="func-input"
+                                                value={func.functionalUser || ''}
+                                                onChange={e => updateFunction(idx, 'functionalUser', e.target.value)}
+                                                placeholder="发起者：用户 接收者：用户"
+                                            />
+                                        </div>
+                                        <div className="func-col func-col-name">
+                                            <input
+                                                className="func-input func-input-name"
+                                                value={func.functionName || ''}
+                                                onChange={e => updateFunction(idx, 'functionName', e.target.value)}
+                                                placeholder="请输入功能过程名称"
+                                            />
+                                        </div>
+                                        <div className="func-col func-col-desc">
+                                            <input
+                                                className="func-input"
+                                                value={func.description || ''}
+                                                onChange={e => updateFunction(idx, 'description', e.target.value)}
+                                                placeholder="功能过程描述..."
+                                            />
+                                        </div>
+                                        <div className="func-col func-col-actions">
+                                            <button
+                                                className="func-action-btn" title="拆分为两个功能"
+                                                onClick={() => splitFunction(idx)}
+                                            >
+                                                <Scissors size={13} />
+                                            </button>
+                                            <button
+                                                className="func-action-btn danger" title="删除此功能"
+                                                onClick={() => deleteFunction(idx)}
+                                            >
+                                                <Trash2 size={13} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+
+                        <div className="func-editor-footer">
+                            <div className="func-editor-footer-info">
+                                <Info size={14} style={{ color: 'var(--text-muted)' }} />
+                                <span>可直接点击表格字段编辑 · 拆分可将一个功能过程复制为两个 · 取消选中的功能不会参与COSMIC拆分</span>
+                            </div>
+                            <div className="func-editor-footer-actions">
+                                <button className="btn btn-secondary" onClick={() => setShowFunctionListEditor(false)}>
+                                    取消
+                                </button>
+                                <button className="btn btn-primary" onClick={saveFunctionEdits}>
+                                    <Save size={14} /> 保存修改
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>

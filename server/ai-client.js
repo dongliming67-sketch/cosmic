@@ -95,7 +95,7 @@ async function callAI(options) {
  * @param {number} maxRetries - 最大重试次数
  * @returns {Object} AI响应
  */
-async function callAIWithRetry(options, maxRetries = 3) {
+async function callAIWithRetry(options, maxRetries = 4) {
     const baseDelay = 3000;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -111,7 +111,9 @@ async function callAIWithRetry(options, maxRetries = 3) {
             const status = error.status || error.response?.status;
             const isRetryable = status === 429 || status === 500 || status === 502 || status === 503
                 || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED'
-                || error.message?.includes('timeout') || error.message?.includes('429');
+                || error.message?.includes('timeout') || error.message?.includes('429')
+                || error.message?.includes('Unexpected end of JSON') || error.message?.includes('invalid json response body')
+                || error.message?.includes('unexpected end of file');
 
             console.warn(`   ⚠️ AI调用失败 (尝试 ${attempt + 1}/${maxRetries}): [${status || error.code || '?'}] ${error.message?.substring(0, 200)}`);
 
