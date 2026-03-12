@@ -8,6 +8,7 @@ import {
     Zap, Sparkles, Brain, ChevronDown, Plus, BarChart3, RefreshCw,
     FileSpreadsheet, Target, Info, Edit3, Scissors, GripVertical, Save
 } from 'lucide-react';
+import NesmaApp from './NesmaApp';
 
 function App() {
     // ═══════════ 状态管理 ═══════════
@@ -32,6 +33,14 @@ function App() {
     const [userGuidelines, setUserGuidelines] = useState('');
     const [coverageResult, setCoverageResult] = useState(null);
     const [isVerifying, setIsVerifying] = useState(false);
+
+    // 分析模式：cosmic 或 nesma
+    const [analysisMode, setAnalysisMode] = useState(() => {
+        if (typeof window !== 'undefined') {
+            return window.localStorage.getItem('analysisMode') || 'cosmic';
+        }
+        return 'cosmic';
+    });
 
     // 模型选择
     const [selectedModel, setSelectedModel] = useState(() => {
@@ -75,8 +84,9 @@ function App() {
         if (typeof window !== 'undefined') {
             window.localStorage.setItem('selectedModel', selectedModel);
             window.localStorage.setItem('minFunctionCount', String(minFunctionCount));
+            window.localStorage.setItem('analysisMode', analysisMode);
         }
-    }, [selectedModel, minFunctionCount]);
+    }, [selectedModel, minFunctionCount, analysisMode]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -104,6 +114,15 @@ function App() {
     };
 
     const getUserConfig = () => {
+        const isGptModel = selectedModel === 'gpt-5.1-codex-mini';
+        if (isGptModel) {
+            return {
+                apiKey: null,
+                baseUrl: 'https://x.ainiaini.xyz/v1',
+                model: 'gpt-5.1-codex-mini',
+                provider: 'gpt'
+            };
+        }
         const modelMap = { 'deepseek-v3': 'deepseek-v3', 'qwen3-coder': 'qwen3-coder-plus' };
         return {
             apiKey: null,
@@ -1184,15 +1203,44 @@ function App() {
             <div className="sidebar">
                 <div className="sidebar-header">
                     <div className="sidebar-logo">
-                        <div className="sidebar-logo-icon">🔬</div>
+                        <div className={`sidebar-logo-icon ${analysisMode === 'nesma' ? 'nesma-logo-icon' : ''}`}>
+                            {analysisMode === 'cosmic' ? '🔬' : '📐'}
+                        </div>
                         <div>
-                            <h1>COSMIC 拆分</h1>
-                            <p>智能功能规模分析</p>
+                            <h1>{analysisMode === 'cosmic' ? 'COSMIC 拆分' : 'NESMA 拆分'}</h1>
+                            <p>{analysisMode === 'cosmic' ? '智能功能规模分析' : '功能点智能拆分'}</p>
                         </div>
                     </div>
                 </div>
 
                 <div className="sidebar-content">
+                    {/* 分析模式选择 */}
+                    <div className="section-group">
+                        <div className="section-label">分析模式</div>
+                        <div className="model-selector">
+                            <button
+                                className={`model-option ${analysisMode === 'cosmic' ? 'active' : ''}`}
+                                onClick={() => setAnalysisMode('cosmic')}
+                            >
+                                <span className="model-option-dot" />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>COSMIC</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>ERWX 数据移动拆分</div>
+                                </div>
+                            </button>
+                            <button
+                                className={`model-option nesma-mode-btn ${analysisMode === 'nesma' ? 'active' : ''}`}
+                                onClick={() => setAnalysisMode('nesma')}
+                            >
+                                <span className="model-option-dot" />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>NESMA</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>ILF/EIF/EI/EO/EQ 功能点</div>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+
                     {/* 模型选择 */}
                     <div className="section-group">
                         <div className="section-label">AI 模型</div>
@@ -1215,6 +1263,16 @@ function App() {
                                 <div>
                                     <div style={{ fontWeight: 600, fontSize: 13 }}>Qwen3-Coder</div>
                                     <div style={{ fontSize: 11, opacity: 0.6 }}>Plus · 代码逻辑</div>
+                                </div>
+                            </button>
+                            <button
+                                className={`model-option gpt-mode-btn ${selectedModel === 'gpt-5.1-codex-mini' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('gpt-5.1-codex-mini')}
+                            >
+                                <span className="model-option-dot" />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>GPT-5.1-Codex</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>Mini · OpenAI</div>
                                 </div>
                             </button>
                         </div>
@@ -1254,7 +1312,15 @@ function App() {
                 </div>
             </div>
 
-            {/* ═══ Main Content ═══ */}
+            {/* ═══ Main Content (conditionally rendered based on mode) ═══ */}
+            {analysisMode === 'nesma' ? (
+                <NesmaApp
+                    selectedModel={selectedModel}
+                    getUserConfig={getUserConfig}
+                    showToast={showToast}
+                />
+            ) : (
+            <>
             <div className="main-content">
                 {/* Top Bar */}
                 <div className="top-bar">
@@ -1846,6 +1912,8 @@ function App() {
                         </div>
                     </div>
                 </div>
+            )}
+            </>
             )}
         </div>
     );

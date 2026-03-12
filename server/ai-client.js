@@ -4,25 +4,33 @@
 
 const OpenAI = require('openai');
 
-// 模型映射表（心流平台模型ID，全部小写）
+// 模型映射表
 const MODEL_MAP = {
     'deepseek-v3': 'deepseek-v3',
     'deepseek-v3.2': 'deepseek-v3.2',
     'qwen3-coder': 'qwen3-coder-plus',
     'qwen3-coder-plus': 'qwen3-coder-plus',
+    'gpt-5.1-codex-mini': 'gpt-5.1-codex-mini',
     // 兼容旧版大写名称
     'DeepSeek-V3-671B': 'deepseek-v3',
     'Qwen3-Coder-Plus': 'qwen3-coder-plus'
 };
 
+// GPT平台模型列表（使用不同的API密钥和基础URL）
+const GPT_MODELS = new Set(['gpt-5.1-codex-mini']);
+
+// GPT模型必须使用流式调用
+const STREAM_ONLY_MODELS = new Set(['gpt-5.1-codex-mini']);
+
 /**
  * 获取 OpenAI 兼容客户端（指向心流平台）
  */
-function createClient(apiKey, baseUrl) {
-    return new OpenAI({
-        apiKey: apiKey || process.env.IFLOW_API_KEY,
-        baseURL: baseUrl || process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1'
-    });
+function createClient(apiKey, baseUrl, model) {
+    // 如果是GPT平台模型，使用GPT平台的密钥和URL
+    const isGptModel = model && GPT_MODELS.has(model);
+    const key = apiKey || (isGptModel ? process.env.GPT_API_KEY : process.env.IFLOW_API_KEY);
+    const url = baseUrl || (isGptModel ? (process.env.GPT_BASE_URL || 'https://x.ainiaini.xyz/v1') : (process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1'));
+    return new OpenAI({ apiKey: key, baseURL: url });
 }
 
 /**
@@ -50,11 +58,12 @@ async function callAI(options) {
         baseUrl = null
     } = options;
 
-    const client = createClient(apiKey, baseUrl);
     const modelName = MODEL_MAP[model] || model;
+    const client = createClient(apiKey, baseUrl, modelName);
+    const isStreamOnly = STREAM_ONLY_MODELS.has(modelName);
 
     if (stream && res) {
-        // 流式调用
+        // 流式调用（直接输出给客户端）
         const completion = await client.chat.completions.create({
             model: modelName,
             messages,
@@ -70,8 +79,34 @@ async function callAI(options) {
             }
         }
         return null;
+    } else if (isStreamOnly) {
+        // 强制流式模型：内部用stream调用，收集完整响应后返回为非流式结果
+        console.log(`   📡 模型 ${modelName} 强制流式调用中...`);
+        const completion = await client.chat.completions.create({
+            model: modelName,
+            messages,
+            temperature,
+            max_tokens,
+            stream: true
+        });
+
+        let fullContent = '';
+        for await (const chunk of completion) {
+            const content = chunk.choices[0]?.delta?.content || '';
+            fullContent += content;
+        }
+
+        // 构造一个兼容非流式格式的响应对象
+        return {
+            choices: [{
+                message: { role: 'assistant', content: fullContent },
+                finish_reason: 'stop'
+            }],
+            model: modelName,
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+        };
     } else {
-        // 非流式调用
+        // 标准非流式调用
         const completion = await client.chat.completions.create({
             model: modelName,
             messages,

@@ -9,10 +9,12 @@ const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
 const path = require('path');
 const fs = require('fs');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+require('dotenv').config(); // also try CWD
 
 const { callAI, callAIWithRetry, MODEL_MAP } = require('./ai-client');
 const { FUNCTION_EXTRACTION_PROMPT, COSMIC_SPLIT_PROMPT, DOCUMENT_UNDERSTANDING_PROMPT, COVERAGE_VERIFICATION_PROMPT, SUPPLEMENTARY_EXTRACTION_PROMPT } = require('./prompts');
+const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT } = require('./nesma-prompts');
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3001;
@@ -1409,6 +1411,713 @@ app.post('/api/export-excel', async (req, res) => {
     } catch (error) {
         console.error('导出Excel失败:', error);
         res.status(500).json({ error: '导出Excel失败: ' + error.message });
+    }
+});
+
+// ═══════════════════════ NESMA 模块识别 ═══════════════════════
+
+app.post('/api/nesma/recognize-modules', async (req, res) => {
+    try {
+        const { documentContent, userConfig = null } = req.body;
+        if (!documentContent) {
+            return res.status(400).json({ error: '缺少文档内容' });
+        }
+
+        console.log('📑 开始NESMA模块层级识别...');
+        const modelName = getModelName(userConfig);
+
+        const completion = await callAIWithRetry({
+            messages: [
+                { role: 'system', content: NESMA_MODULE_RECOGNITION_PROMPT },
+                { role: 'user', content: `请分析以下需求文档的功能模块层级结构：\n\n${documentContent}` }
+            ],
+            model: modelName,
+            temperature: 0.3,
+            max_tokens: 8000
+        });
+
+        if (!completion?.choices?.[0]?.message?.content) {
+            return res.status(500).json({ error: 'AI返回了空响应，请重试' });
+        }
+        const reply = completion.choices[0].message.content;
+
+        let moduleData = null;
+        try {
+            const jsonMatch = reply.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                moduleData = JSON.parse(jsonMatch[0]);
+            }
+        } catch (e) {
+            console.warn('NESMA模块识别JSON解析失败:', e.message);
+            moduleData = { modules: [], totalEstimated: 0, summary: '解析失败' };
+        }
+
+        console.log(`✅ NESMA模块识别完成: ${moduleData?.modules?.length || 0} 个模块节点`);
+        res.json({ success: true, moduleData });
+    } catch (error) {
+        console.error('NESMA模块识别失败:', error);
+        res.status(500).json({ error: 'NESMA模块识别失败: ' + error.message });
+    }
+});
+
+// ═══════════════════════ NESMA 功能点提取 ═══════════════════════
+
+/**
+ * 重用程度 → 调整系数映射
+ * 参考："软件开发计价模型" 10/7/4/5/4
+ */
+const REUSE_COEFFICIENTS = {
+    '低': 1.0,       // 完全新开发
+    '中': 0.667,     // 部分复用
+    '高': 0.333,     // 高度复用
+};
+
+/**
+ * NESMA 功能点权重表（类别 × 复杂度 → UFP）
+ */
+const FP_WEIGHTS = {
+    ILF: { '低': 7, '中': 10, '高': 15 },
+    EIF: { '低': 5, '中': 7, '高': 10 },
+    EI:  { '低': 3, '中': 4, '高': 6 },
+    EO:  { '低': 4, '中': 5, '高': 7 },
+    EQ:  { '低': 3, '中': 4, '高': 6 },
+};
+
+/**
+ * 解析NESMA功能点Markdown表格
+ * 支持三种格式：
+ *   - v3格式（7列）：一级模块 | 二级模块 | 三级模块 | 业务功能 | 功能点类型 | 功能需求描述 | 外部接口需求描述
+ *   - v2格式（4列）：功能模块 | 子功能 | 功能点计数项名称 | 类别
+ *   - v1格式（12列）：编号|一级模块|二级模块|三级模块|四级模块|功能点计数项名称|类别|...
+ */
+function parseNesmaTable(markdown) {
+    if (!markdown) return [];
+    const tableData = [];
+    const lines = markdown.split('\n');
+    let headerFound = false;
+    let formatVersion = 0; // 0=未确定, 1=v1旧格式, 2=v2四列, 3=v3七列
+    let hasReuseColumn = false;
+    let currentLevel1 = '';   // 一级模块
+    let currentLevel2 = '';   // 二级模块
+    let currentLevel3 = '';   // 三级模块
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) continue;
+
+        // 检查表头 — 判断格式版本
+        if (!headerFound && (trimmed.includes('业务功能') || trimmed.includes('功能点类型') || trimmed.includes('功能需求描述') ||
+            trimmed.includes('功能点计数项名称') || trimmed.includes('功能模块') || trimmed.includes('子功能') ||
+            trimmed.includes('编号') || trimmed.includes('一级模块') || trimmed.includes('类别'))) {
+            headerFound = true;
+            hasReuseColumn = trimmed.includes('重用程度');
+
+            // v3格式：包含"业务功能"或"功能需求描述"或"外部接口需求描述"
+            if (trimmed.includes('业务功能') || trimmed.includes('功能需求描述') || trimmed.includes('外部接口需求描述')) {
+                formatVersion = 3;
+            }
+            // v2格式：包含"功能模块"或"子功能"，不包含"编号"/"一级模块"
+            else if ((trimmed.includes('功能模块') || trimmed.includes('子功能')) && !trimmed.includes('编号') && !trimmed.includes('一级模块')) {
+                formatVersion = 2;
+            }
+            // v1格式
+            else {
+                formatVersion = 1;
+            }
+            continue;
+        }
+
+        // 跳过分隔行 — 整行去掉 |, -, :, 空格后应为空
+        if (trimmed.replace(/[\s|:\-]/g, '').length === 0) continue;
+        if (!headerFound) continue;
+
+        // 解析数据行
+        const cells = trimmed.split('|').filter((_, i, arr) => i > 0 && i < arr.length - 1).map(c => c.trim());
+
+        if (formatVersion === 3) {
+            // ═══ v3格式：一级模块 | 二级模块 | 三级模块 | 业务功能 | 功能点类型 | 功能需求描述 | 外部接口需求描述 ═══
+            if (cells.length < 5) continue;
+
+            let l1 = cells[0] || '';
+            let l2 = cells[1] || '';
+            let l3 = cells[2] || '';
+            let funcName = cells[3] || '';
+            let category = (cells[4] || '').toUpperCase().trim();
+            let funcDescription = cells[5] || '';
+            let interfaceDescription = cells[6] || '';
+
+            // 验证类别
+            const validCategories = ['ILF', 'EIF', 'EI', 'EO', 'EQ'];
+            if (!validCategories.includes(category)) continue;
+
+            // 模块名称继承（同一模块下后续行留空）
+            if (l1) currentLevel1 = l1;
+            if (l2) currentLevel2 = l2;
+            if (l3) currentLevel3 = l3;
+
+            // 默认复杂度为 低
+            const complexity = '低';
+            const fpCount = (FP_WEIGHTS[category] && FP_WEIGHTS[category][complexity]) || 0;
+            const reuseLevel = '低';
+            const reuseCoeff = REUSE_COEFFICIENTS[reuseLevel] || 1.0;
+            const afp = Math.round(fpCount * reuseCoeff * 1000) / 1000;
+
+            tableData.push({
+                id: String(tableData.length + 1),
+                level1: sanitizeText(currentLevel1) || '无',
+                level2: sanitizeText(currentLevel2) || '无',
+                level3: sanitizeText(currentLevel3) || '无',
+                funcModule: sanitizeText(currentLevel1) || '',
+                subFunction: sanitizeText(currentLevel2) || '',
+                level4: sanitizeText(currentLevel3) || '无',
+                funcName: sanitizeText(funcName) || '',
+                category: category,
+                complexity: complexity,
+                fpCount: fpCount,
+                det: 0,
+                retFtr: 0,
+                reuseLevel: reuseLevel,
+                afp: afp,
+                modType: '新增',
+                funcDescription: sanitizeText(funcDescription) || '',
+                interfaceDescription: sanitizeText(interfaceDescription) || ''
+            });
+        } else if (formatVersion === 2) {
+            // ═══ v2格式：功能模块 | 子功能 | 功能点计数项名称 | 类别 ═══
+            let funcModule, subFunc, funcName, category;
+            if (cells.length >= 4) {
+                funcModule = cells[0] || '';
+                subFunc = cells[1] || '';
+                funcName = cells[2] || '';
+                category = (cells[3] || '').toUpperCase().trim();
+            } else if (cells.length === 3) {
+                funcModule = '';
+                subFunc = cells[0] || '';
+                funcName = cells[1] || '';
+                category = (cells[2] || '').toUpperCase().trim();
+            } else {
+                continue;
+            }
+
+            const validCategories = ['ILF', 'EIF', 'EI', 'EO', 'EQ'];
+            if (!validCategories.includes(category)) continue;
+
+            if (funcModule) currentLevel1 = funcModule;
+            if (subFunc) currentLevel2 = subFunc;
+
+            const complexity = '低';
+            const fpCount = (FP_WEIGHTS[category] && FP_WEIGHTS[category][complexity]) || 0;
+            const reuseLevel = '低';
+            const reuseCoeff = REUSE_COEFFICIENTS[reuseLevel] || 1.0;
+            const afp = Math.round(fpCount * reuseCoeff * 1000) / 1000;
+
+            tableData.push({
+                id: String(tableData.length + 1),
+                funcModule: sanitizeText(currentLevel1) || '',
+                subFunction: sanitizeText(currentLevel2) || '',
+                level1: sanitizeText(currentLevel1) || '无',
+                level2: sanitizeText(currentLevel2) || '无',
+                level3: '无',
+                level4: '无',
+                funcName: sanitizeText(funcName) || '',
+                category: category,
+                complexity: complexity,
+                fpCount: fpCount,
+                det: 0,
+                retFtr: 0,
+                reuseLevel: reuseLevel,
+                afp: afp,
+                modType: '新增',
+                funcDescription: '',
+                interfaceDescription: ''
+            });
+        } else {
+            // ═══ v1格式：编号|一级模块|二级模块|三级模块|四级模块|功能点计数项名称|类别|... ═══
+            if (cells.length < 8) continue;
+
+            const [id, level1, level2, level3, level4, funcName, category, ...rest] = cells;
+
+            const validCategories = ['ILF', 'EIF', 'EI', 'EO', 'EQ'];
+            const cleanCategory = (category || '').toUpperCase().trim();
+            if (!validCategories.includes(cleanCategory)) continue;
+
+            const complexity = rest[0]?.trim() || '中';
+            const fpCount = parseInt(rest[1]?.trim()) || 0;
+            const det = parseInt(rest[2]?.trim()) || 0;
+            const retFtr = parseInt(rest[3]?.trim()) || 0;
+
+            let reuseLevel, modType;
+            if (hasReuseColumn) {
+                reuseLevel = rest[4]?.trim() || '低';
+                modType = rest[5]?.trim() || '新增';
+            } else {
+                reuseLevel = '低';
+                modType = rest[4]?.trim() || '新增';
+            }
+
+            const validReuse = ['低', '中', '高'];
+            if (!validReuse.includes(reuseLevel)) reuseLevel = '低';
+
+            const reuseCoeff = REUSE_COEFFICIENTS[reuseLevel] || 1.0;
+            const afp = Math.round(fpCount * reuseCoeff * 1000) / 1000;
+
+            tableData.push({
+                id: sanitizeText(id) || String(tableData.length + 1),
+                subFunction: '',
+                level1: sanitizeText(level1) || '无',
+                level2: sanitizeText(level2) || '无',
+                level3: sanitizeText(level3) || '无',
+                level4: sanitizeText(level4) || '无',
+                funcName: sanitizeText(funcName) || '',
+                category: cleanCategory,
+                complexity: complexity,
+                fpCount: fpCount,
+                det: det,
+                retFtr: retFtr,
+                reuseLevel: reuseLevel,
+                afp: afp,
+                modType: sanitizeText(modType) || '新增',
+                funcDescription: '',
+                interfaceDescription: ''
+            });
+        }
+    }
+    return tableData;
+}
+
+app.post('/api/nesma/extract-functions', async (req, res) => {
+    try {
+        const { documentContent, chapterContent = '', chapterName = '', userGuidelines = '', previousResults = [], moduleStructure = null, extractionMode = 'precise', userConfig = null } = req.body;
+        const content = chapterContent || documentContent;
+        if (!content) {
+            return res.status(400).json({ error: '缺少文档内容' });
+        }
+
+        const chapterInfo = chapterName ? `（${chapterName}）` : '';
+        const modeLabel = extractionMode === 'quantity' ? '「数量优先」' : '「精准」';
+        console.log(`📋 开始NESMA功能点提取${chapterInfo}（${modeLabel}模式）...`);
+        const modelName = getModelName(userConfig);
+
+        // 根据模式选择提示词
+        const activePrompt = extractionMode === 'quantity' ? NESMA_QUANTITY_PRIORITY_PROMPT : NESMA_FUNCTION_EXTRACTION_PROMPT;
+
+        let userPrompt = `请从以下需求文档中提取所有NESMA功能点：\n\n${content}`;
+
+        // ── 注入三级模块结构作为"脚手架"，确保每个三级模块都被展开 ──
+        if (moduleStructure && moduleStructure.modules && moduleStructure.modules.length > 0) {
+            // 筛选出与当前章节相关的模块（如果有章节名则过滤，否则全部输出）
+            const relevantModules = chapterName
+                ? moduleStructure.modules.filter(m =>
+                    m.level1?.includes(chapterName) ||
+                    m.level2?.includes(chapterName) ||
+                    m.level3?.includes(chapterName) ||
+                    chapterName.includes(m.level1?.split(' ').pop() || '') ||
+                    chapterName.includes(m.level2?.split(' ').pop() || '')
+                  )
+                : moduleStructure.modules;
+
+            const modList = (relevantModules.length > 0 ? relevantModules : moduleStructure.modules)
+                .map(m => {
+                    const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
+                    const est = m.estimatedFunctionPoints ? `，预估约${m.estimatedFunctionPoints}个功能点` : '';
+                    return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs}${est}`;
+                }).join('\n');
+
+            userPrompt += `\n\n## ⚠️ 模块覆盖脚手架（必须逐一覆盖以下每个三级模块！）\n${modList}\n\n以上每个三级模块都必须至少识别出 1个ILF/EIF + CRUD相关EI + 查询相关EQ + 统计相关EO。不得遗漏任何三级模块！`;
+            console.log(`📌 注入模块脚手架: ${(relevantModules.length > 0 ? relevantModules : moduleStructure.modules).length} 个三级模块`);
+        }
+
+        if (previousResults.length > 0) {
+            const existingNames = previousResults.map(r => r.funcName).filter(Boolean);
+            userPrompt += `\n\n## 已提取的功能点（请勿重复）：\n${existingNames.map((n, i) => `${i + 1}. ${n}`).join('\n')}`;
+        }
+
+        if (userGuidelines) {
+            userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
+        }
+
+        const completion = await callAIWithRetry({
+            messages: [
+                { role: 'system', content: activePrompt },
+                { role: 'user', content: userPrompt }
+            ],
+            model: modelName,
+            temperature: 0.5,
+            max_tokens: 16000
+        });
+
+        if (!completion?.choices?.[0]?.message?.content) {
+            return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
+        }
+        const reply = completion.choices[0].message.content;
+        const tableData = parseNesmaTable(reply);
+
+        console.log(`✅ NESMA功能点提取完成，解析到 ${tableData.length} 个功能点`);
+        res.json({
+            success: true,
+            reply,
+            tableData,
+            count: tableData.length
+        });
+    } catch (error) {
+        console.error('NESMA功能点提取失败:', error);
+        res.status(500).json({ error: 'NESMA功能点提取失败: ' + error.message });
+    }
+});
+
+// ═══════════════════════ NESMA 表格解析 ═══════════════════════
+
+app.post('/api/nesma/parse-table', (req, res) => {
+    try {
+        const { markdown } = req.body;
+        const tableData = parseNesmaTable(markdown);
+        res.json({ success: true, tableData, count: tableData.length });
+    } catch (error) {
+        res.status(500).json({ error: 'NESMA表格解析失败: ' + error.message });
+    }
+});
+
+// ═══════════════════════ NESMA 覆盖度验证 ═══════════════════════
+
+app.post('/api/nesma/verify-coverage', async (req, res) => {
+    try {
+        const { documentContent, extractedFunctions = [], userConfig = null } = req.body;
+        if (!documentContent) {
+            return res.status(400).json({ error: '缺少文档内容' });
+        }
+
+        console.log(`🔍 开始NESMA覆盖度验证，已提取 ${extractedFunctions.length} 个功能点...`);
+        const modelName = getModelName(userConfig);
+
+        const funcListText = extractedFunctions.map((f, i) => {
+            const path = [f.level1 || f.funcModule, f.level2 || f.subFunction, f.level3].filter(Boolean).join(' > ');
+            const desc = f.funcDescription ? ` | 说明：${f.funcDescription.substring(0, 50)}` : '';
+            return `${i + 1}. [${f.category}] ${f.funcName}（模块：${path}${desc}）`;
+        }).join('\n');
+
+        const completion = await callAIWithRetry({
+            messages: [
+                { role: 'system', content: NESMA_COVERAGE_VERIFICATION_PROMPT },
+                { role: 'user', content: `## 原始需求文档：\n${documentContent}\n\n## 已提取的NESMA功能点（共${extractedFunctions.length}个，含三级模块路径和描述）：\n${funcListText}\n\n请严格审查功能点覆盖度，重点检查：1.每个ILF是否有配套EI和EO/EQ；2.是否有未覆盖的三级模块；3.文档中未体现的EQ子类（导出、推送、筛选）。` }
+            ],
+            model: modelName,
+            temperature: 0.3,
+            max_tokens: 8000
+        });
+
+        if (!completion?.choices?.[0]?.message?.content) {
+            return res.status(500).json({ error: 'AI返回了空响应，请重试' });
+        }
+        const reply = completion.choices[0].message.content;
+
+        let verification = null;
+        try {
+            const jsonMatch = reply.match(/\{[\s\S]*\}/);
+            if (jsonMatch) verification = JSON.parse(jsonMatch[0]);
+        } catch (e) {
+            verification = { coverageScore: 0, missedFunctions: [], suggestions: ['JSON解析失败，请重试'] };
+        }
+
+        console.log(`✅ NESMA覆盖度验证完成: ${verification?.coverageScore || 0}分, 遗漏${verification?.missedFunctions?.length || 0}个`);
+        res.json({ success: true, verification });
+    } catch (error) {
+        console.error('NESMA覆盖度验证失败:', error);
+        res.status(500).json({ error: 'NESMA覆盖度验证失败: ' + error.message });
+    }
+});
+
+// ═══════════════════════ NESMA 补充提取 ═══════════════════════
+
+app.post('/api/nesma/extract-supplementary', async (req, res) => {
+    try {
+        const { documentContent, existingFunctions = [], missedFunctions = [], moduleStructure = null, userConfig = null } = req.body;
+        if (!documentContent) {
+            return res.status(400).json({ error: '缺少文档内容' });
+        }
+
+        console.log(`🔄 开始NESMA补充提取，遗漏 ${missedFunctions.length} 个...`);
+        const modelName = getModelName(userConfig);
+
+        const existingNames = existingFunctions.map((f, i) => `${i + 1}. [${f.category}] ${f.funcName}`).join('\n');
+        const missedNames = missedFunctions.map((f, i) => {
+            if (typeof f === 'object') return `${i + 1}. [${f.category || '?'}] ${f.functionName}（${f.reason || ''}）所属模块：${f.parentModule || '未知'}`;
+            return `${i + 1}. ${f}`;
+        }).join('\n');
+
+        let userPrompt = `## 原始需求文档：\n${documentContent}\n\n## 已提取的功能点（不要重复）：\n${existingNames}\n\n## 遗漏的功能点（请补充提取）：\n${missedNames}\n\n请补充提取上述遗漏的NESMA功能点。`;
+
+        // 注入模块脚手架，帮助AI定位遗漏功能点所在的模块
+        if (moduleStructure && moduleStructure.modules?.length > 0) {
+            const modList = moduleStructure.modules.map(m =>
+                `  - [${m.level1}] > [${m.level2}] > [${m.level3}]`
+            ).join('\n');
+            userPrompt += `\n\n## 模块覆盖脚手架（遗漏功能点可能属于以下模块）：\n${modList}`;
+        }
+
+        const completion = await callAIWithRetry({
+            messages: [
+                { role: 'system', content: NESMA_FUNCTION_EXTRACTION_PROMPT },
+                { role: 'user', content: userPrompt }
+            ],
+            model: modelName,
+            temperature: 0.5,
+            max_tokens: 16000
+        });
+
+        if (!completion?.choices?.[0]?.message?.content) {
+            return res.status(500).json({ error: 'AI返回了空响应' });
+        }
+        const reply = completion.choices[0].message.content;
+        const tableData = parseNesmaTable(reply);
+
+        console.log(`✅ NESMA补充提取到 ${tableData.length} 个功能点`);
+        res.json({ success: true, tableData, count: tableData.length });
+    } catch (error) {
+        console.error('NESMA补充提取失败:', error);
+        res.status(500).json({ error: 'NESMA补充提取失败: ' + error.message });
+    }
+});
+
+// ═══════════════════════ NESMA 导出Excel ═══════════════════════
+
+app.post('/api/nesma/export-excel', async (req, res) => {
+    try {
+        const { tableData, filename = 'NESMA功能点拆分结果', adjustmentFactors = {} } = req.body;
+        if (!tableData || tableData.length === 0) {
+            return res.status(400).json({ error: '没有可导出的数据' });
+        }
+
+        const workbook = new ExcelJS.Workbook();
+        const reuseCoeff = { '低': 1.0, '中': 0.667, '高': 0.333 };
+        const categoryColors = {
+            'ILF': 'FF1E88E5', 'EIF': 'FF43A047', 'EI': 'FFFB8C00', 'EO': 'FF8E24AA', 'EQ': 'FF00ACC1'
+        };
+
+        // ═══════════ Sheet 1: 规模估算（参考Excel标准工作量模型格式） ═══════════
+        const worksheet = workbook.addWorksheet('规模估算');
+
+        const totalUFP = tableData.reduce((sum, r) => sum + (r.fpCount || 0), 0);
+        const totalAFP = tableData.reduce((sum, r) => {
+            const coeff = reuseCoeff[r.reuseLevel || '低'] || 1.0;
+            return sum + (r.fpCount || 0) * coeff;
+        }, 0);
+        const roundedAFP = Math.round(totalAFP * 100) / 100;
+
+        // 汇总信息行
+        const sr0 = worksheet.addRow(['', '软件开发计价模型', '', '"软件开发计价模型"：10/7/4/5/4']);
+        sr0.getCell(2).font = { bold: true, size: 11 };
+        sr0.getCell(4).font = { size: 10, color: { argb: 'FF666666' } };
+        const sr1 = worksheet.addRow(['', totalUFP, '', 'UFP,单位：FP']);
+        sr1.getCell(2).font = { bold: true, size: 14, color: { argb: 'FF008000' } };
+        sr1.getCell(2).numFmt = '#,##0.00';
+        sr1.getCell(4).font = { bold: true, color: { argb: 'FFFF0000' } };
+        const sr2 = worksheet.addRow(['', roundedAFP, '', 'AFP,单位：FP']);
+        sr2.getCell(2).font = { bold: true, size: 14, color: { argb: 'FFFF0000' } };
+        sr2.getCell(2).numFmt = '#,##0.00';
+        sr2.getCell(4).font = { bold: true, color: { argb: 'FFFF0000' } };
+        // 背景色
+        sr1.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } };
+        sr2.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+        sr2.getCell(2).font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+
+        // 表头行 — v3格式：一级模块|二级模块|三级模块|业务功能|功能点类型|功能需求描述|外部接口需求描述|UFP|重用程度|修改类型|AFP
+        const headers = ['一级模块', '二级模块', '三级模块', '业务功能', '功能点类型', '功能需求描述', '外部接口需求描述', 'UFP', '重用程度', '修改类型', 'AFP'];
+        const headerRow = worksheet.addRow(headers);
+        const headerRowNum = worksheet.lastRow.number;
+
+        headerRow.eachCell((cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D4F8B' } };
+            cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+            cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+        });
+
+        worksheet.columns = [
+            { width: 20 }, // 一级模块
+            { width: 22 }, // 二级模块
+            { width: 22 }, // 三级模块
+            { width: 32 }, // 业务功能
+            { width: 10 }, // 功能点类型
+            { width: 40 }, // 功能需求描述
+            { width: 36 }, // 外部接口需求描述
+            { width: 8 },  // UFP
+            { width: 10 }, // 重用程度
+            { width: 10 }, // 修改类型
+            { width: 10 }, // AFP
+        ];
+
+        // 填充数据 — 各级模块只在每组第一行显示，后续行留空
+        let prevL1 = '';
+        let prevL2 = '';
+        let prevL3 = '';
+        tableData.forEach((row) => {
+            const l1 = row.level1 || row.funcModule || '';
+            const showL1 = (l1 && l1 !== '无' && l1 !== prevL1) ? l1 : '';
+            if (l1 && l1 !== '无') prevL1 = l1;
+
+            const l2 = row.level2 || row.subFunction || '';
+            const showL2 = (l2 && l2 !== '无' && l2 !== prevL2) ? l2 : '';
+            if (l2 && l2 !== '无') prevL2 = l2;
+
+            const l3 = row.level3 || row.level4 || '';
+            const showL3 = (l3 && l3 !== '无' && l3 !== prevL3) ? l3 : '';
+            if (l3 && l3 !== '无') prevL3 = l3;
+
+            const rl = row.reuseLevel || '低';
+            const coeff = reuseCoeff[rl] || 1.0;
+            const afpVal = Math.round((row.fpCount || 0) * coeff * 1000) / 1000;
+
+            const dataRow = worksheet.addRow([
+                showL1, showL2, showL3, row.funcName, row.category,
+                row.funcDescription || '', row.interfaceDescription || '',
+                row.fpCount || 0, rl, row.modType || '新增', afpVal
+            ]);
+            dataRow.eachCell((cell, colNumber) => {
+                cell.alignment = { vertical: 'middle', wrapText: true };
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
+                };
+                // 类别列颜色
+                if (colNumber === 5) {
+                    cell.font = { bold: true, color: { argb: categoryColors[row.category] || 'FF000000' } };
+                    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                }
+                // 居中列
+                if ([5, 8, 9, 10, 11].includes(colNumber)) {
+                    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                }
+                if (colNumber === 11) cell.numFmt = '#,##0.000';
+            });
+        });
+
+        // 汇总尾行
+        worksheet.addRow([]);
+        const catCounts = {};
+        tableData.forEach(r => { catCounts[r.category] = (catCounts[r.category] || 0) + 1; });
+        const catSummary = `ILF:${catCounts['ILF'] || 0} EIF:${catCounts['EIF'] || 0} EI:${catCounts['EI'] || 0} EO:${catCounts['EO'] || 0} EQ:${catCounts['EQ'] || 0}`;
+        const footerRow = worksheet.addRow(['', '', '', `总计: ${tableData.length}个功能点 | ${catSummary}`, '', '', '', totalUFP, '', '', roundedAFP]);
+        footerRow.getCell(4).font = { bold: true, size: 11 };
+        footerRow.getCell(8).font = { bold: true, size: 12, color: { argb: 'FF0D4F8B' } };
+        footerRow.getCell(8).numFmt = '#,##0';
+        footerRow.getCell(11).font = { bold: true, size: 12, color: { argb: 'FF1E88E5' } };
+        footerRow.getCell(11).numFmt = '#,##0.00';
+        worksheet.views = [{ state: 'frozen', ySplit: headerRowNum }];
+
+        // ═══════════ Sheet 2: 调整因子 ═══════════
+        const ws2 = workbook.addWorksheet('调整因子');
+        ws2.addRow(['调整因子列表']).getCell(1).font = { bold: true, size: 14, color: { argb: 'FF0D4F8B' } };
+        ws2.addRow([]);
+        const afHeaders = ['调整因子', '选项', '描述', '系数值'];
+        const afHeaderRow = ws2.addRow(afHeaders);
+        afHeaderRow.eachCell((cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D4F8B' } };
+            cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+        });
+        const af = adjustmentFactors;
+        const factors = [
+            ['规模计数时机', af.countingTiming || '项目早期', '项目处于需求规划、需求调研阶段', af.countingTimingValue || 1.39],
+            ['应用类型', af.appType || '业务处理', '办公自动化系统、日常管理及业务处理用软件等', af.appTypeValue || 1.0],
+            ['开发语言', af.devLanguage || 'JAVA/C++/C#', '', af.devLanguageValue || 1.0],
+            ['开发团队背景', af.teamBackground || '有相关行业经验', '', af.teamBackgroundValue || 0.8],
+            ['分布式处理', af.distributedProcessing || '客户端/服务器分布式处理', '', af.distributedProcessingValue || 0],
+            ['性能', af.performance || '应答时间/处理率很重要', '', af.performanceValue || 0],
+            ['可靠性', af.reliability || '故障带来较多不便', '', af.reliabilityValue || 0],
+            ['多重站点', af.multiSite || '需考虑不同站点运行', '', af.multiSiteValue || 0],
+        ];
+        factors.forEach(f => {
+            const row = ws2.addRow(f);
+            row.eachCell((cell) => {
+                cell.alignment = { vertical: 'middle', wrapText: true };
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
+                };
+            });
+        });
+        ws2.columns = [{ width: 18 }, { width: 36 }, { width: 50 }, { width: 12 }];
+
+        // ═══════════ Sheet 3: 详细清单（完整7列+UFP/AFP） ═══════════
+        const ws3 = workbook.addWorksheet('详细清单');
+        const detailHeaders = ['编号', '一级模块', '二级模块', '三级模块', '业务功能', '功能点类型', '功能需求描述', '外部接口需求描述', 'UFP', '重用程度', '修改类型', 'AFP'];
+        const dHeaderRow = ws3.addRow(detailHeaders);
+        dHeaderRow.eachCell((cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D4F8B' } };
+            cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+            cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+        });
+        ws3.columns = [
+            { width: 6 },  // 编号
+            { width: 20 }, // 一级模块
+            { width: 22 }, // 二级模块
+            { width: 22 }, // 三级模块
+            { width: 32 }, // 业务功能
+            { width: 10 }, // 功能点类型
+            { width: 40 }, // 功能需求描述
+            { width: 36 }, // 外部接口需求描述
+            { width: 8 },  // UFP
+            { width: 10 }, // 重用程度
+            { width: 10 }, // 修改类型
+            { width: 10 }, // AFP
+        ];
+        let prevDL1 = '';
+        let prevDL2 = '';
+        let prevDL3 = '';
+        tableData.forEach((row) => {
+            const rl = row.reuseLevel || '低';
+            const coeff = reuseCoeff[rl] || 1.0;
+            const afpVal = Math.round((row.fpCount || 0) * coeff * 1000) / 1000;
+
+            const l1 = row.level1 || row.funcModule || '';
+            const showL1 = (l1 && l1 !== '无' && l1 !== prevDL1) ? l1 : '';
+            if (l1 && l1 !== '无') prevDL1 = l1;
+
+            const l2 = row.level2 || row.subFunction || '';
+            const showL2 = (l2 && l2 !== '无' && l2 !== prevDL2) ? l2 : '';
+            if (l2 && l2 !== '无') prevDL2 = l2;
+
+            const l3 = row.level3 || row.level4 || '';
+            const showL3 = (l3 && l3 !== '无' && l3 !== prevDL3) ? l3 : '';
+            if (l3 && l3 !== '无') prevDL3 = l3;
+
+            const dRow = ws3.addRow([
+                row.id, showL1, showL2, showL3, row.funcName, row.category,
+                row.funcDescription || '', row.interfaceDescription || '',
+                row.fpCount, rl, row.modType, afpVal
+            ]);
+            dRow.eachCell((cell, colNumber) => {
+                cell.alignment = { vertical: 'middle', wrapText: true };
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
+                    right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
+                };
+                if ([1, 6, 9, 10, 11, 12].includes(colNumber)) {
+                    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                }
+                if (colNumber === 6) {
+                    cell.font = { bold: true, color: { argb: categoryColors[row.category] || 'FF000000' } };
+                }
+                if (colNumber === 12) cell.numFmt = '#,##0.000';
+            });
+        });
+        ws3.views = [{ state: 'frozen', ySplit: 1 }];
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}.xlsx`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (error) {
+        console.error('NESMA导出Excel失败:', error);
+        res.status(500).json({ error: 'NESMA导出Excel失败: ' + error.message });
     }
 });
 

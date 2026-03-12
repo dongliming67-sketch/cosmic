@@ -1438,6 +1438,125 @@ textarea.setting-input {
     font-family: var(--font-mono);
 }
 
+/* ═══ NESMA 专用样式 ═══ */
+:root {
+    --nesma-accent: #0D4F8B;
+    --nesma-accent-light: #1976D2;
+    --nesma-gradient: linear-gradient(135deg, #0D4F8B 0%, #1976D2 50%, #00ACC1 100%);
+    --nesma-gradient-btn: linear-gradient(135deg, #0D4F8B 0%, #1565C0 100%);
+    --nesma-gradient-btn-hover: linear-gradient(135deg, #1976D2 0%, #0D4F8B 100%);
+    --nesma-glow: 0 4px 16px rgba(13, 79, 139, 0.15);
+}
+
+/* NESMA Logo */
+.nesma-logo-icon {
+    background: var(--nesma-gradient) !important;
+    box-shadow: var(--nesma-glow) !important;
+}
+
+/* NESMA Title */
+.nesma-title {
+    background: var(--nesma-gradient) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    background-clip: text !important;
+}
+
+/* NESMA Badge */
+.nesma-badge {
+    background: rgba(13, 79, 139, 0.08) !important;
+    color: var(--nesma-accent) !important;
+}
+
+/* NESMA Buttons */
+.nesma-btn {
+    background: var(--nesma-gradient-btn) !important;
+    box-shadow: var(--nesma-glow) !important;
+}
+.nesma-btn:hover {
+    background: var(--nesma-gradient-btn-hover) !important;
+    box-shadow: 0 6px 20px rgba(13, 79, 139, 0.25) !important;
+}
+
+/* NESMA Welcome Feature Icons */
+.nesma-feat-1 {
+    background: rgba(13, 79, 139, 0.1);
+    color: var(--nesma-accent);
+}
+.nesma-feat-2 {
+    background: rgba(25, 118, 210, 0.1);
+    color: var(--nesma-accent-light);
+}
+.nesma-feat-3 {
+    background: rgba(0, 172, 193, 0.1);
+    color: #00ACC1;
+}
+
+/* NESMA Welcome Icon */
+.nesma-welcome-icon {
+    background: var(--nesma-gradient) !important;
+    box-shadow: var(--nesma-glow), 0 8px 32px rgba(13, 79, 139, 0.15) !important;
+}
+
+/* NESMA Progress Bar */
+.nesma-progress {
+    background: var(--nesma-gradient) !important;
+}
+
+/* NESMA Mode Button */
+.nesma-mode-btn.active {
+    background: rgba(13, 79, 139, 0.06) !important;
+    border-color: rgba(13, 79, 139, 0.35) !important;
+    color: var(--nesma-accent) !important;
+}
+.nesma-mode-btn.active .model-option-dot {
+    background: var(--nesma-accent) !important;
+    box-shadow: 0 0 8px rgba(13, 79, 139, 0.4) !important;
+}
+
+/* ═══ NESMA Category Badges ═══ */
+.nesma-cat-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+}
+.nesma-cat-badge.cat-ilf {
+    background: rgba(30, 136, 229, 0.1);
+    color: #1E88E5;
+}
+.nesma-cat-badge.cat-eif {
+    background: rgba(67, 160, 71, 0.1);
+    color: #43A047;
+}
+.nesma-cat-badge.cat-ei {
+    background: rgba(251, 140, 0, 0.1);
+    color: #FB8C00;
+}
+.nesma-cat-badge.cat-eo {
+    background: rgba(142, 36, 170, 0.1);
+    color: #8E24AA;
+}
+.nesma-cat-badge.cat-eq {
+    background: rgba(0, 172, 193, 0.1);
+    color: #00ACC1;
+}
+
+/* GPT Model Button */
+.gpt-mode-btn.active {
+    background: rgba(16, 163, 127, 0.06) !important;
+    border-color: rgba(16, 163, 127, 0.35) !important;
+    color: #10A37F !important;
+}
+.gpt-mode-btn.active .model-option-dot {
+    background: #10A37F !important;
+    box-shadow: 0 0 8px rgba(16, 163, 127, 0.4) !important;
+}
+
 /* ═══ Responsive ═══ */
 @media (max-width: 768px) {
     .sidebar {
