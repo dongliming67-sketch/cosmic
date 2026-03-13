@@ -57,7 +57,7 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
     const [showEditModal, setShowEditModal] = useState(false);
     const [moduleStructure, setModuleStructure] = useState(null); // NESMA三级模块结构
     const [extractionMode, setExtractionMode] = useState('precise'); // 'precise' | 'quantity'
-    const [totalTargetCount, setTotalTargetCount] = useState(300); // 数量优先：目标总功能点数
+    const [totalTargetCount, setTotalTargetCount] = useState(200); // 数量优先：用户指定的目标总功能点数
     const [quantityPlan, setQuantityPlan] = useState(null); // 每模块目标数量规划 [{level1,level2,level3,target,...}]
     const [showQuantityPlan, setShowQuantityPlan] = useState(false); // 数量规划弹窗
 
@@ -1198,7 +1198,7 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                             <input
                                 type="number" min={50} max={3000} step={50}
                                 value={totalTargetCount}
-                                onChange={e => setTotalTargetCount(Math.max(50, parseInt(e.target.value) || 300))}
+                                onChange={e => setTotalTargetCount(Math.max(10, parseInt(e.target.value) || 200))}
                                 style={{ width: 80, padding: '3px 6px', fontSize: 13, border: '1px solid var(--border-subtle)', borderRadius: 6, background: 'var(--bg-secondary)', color: 'var(--text-primary)', textAlign: 'center' }}
                             />
                             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>个</span>
