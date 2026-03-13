@@ -106,7 +106,7 @@ function App() {
         setSelectedModel(model);
         try {
             await axios.post('/api/switch-model', { model });
-            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'qwen3-coder': 'Qwen3-Coder-Plus' };
+            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'deepseek-r1': 'DeepSeek-R1 深度思考', 'qwen3-coder': 'Qwen3-Coder-Plus' };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
             showToast('切换模型失败');
@@ -123,7 +123,7 @@ function App() {
                 provider: 'gpt'
             };
         }
-        const modelMap = { 'deepseek-v3': 'deepseek-v3', 'qwen3-coder': 'qwen3-coder-plus' };
+        const modelMap = { 'deepseek-v3': 'deepseek-v3', 'deepseek-r1': 'deepseek-r1', 'qwen3-coder': 'qwen3-coder-plus' };
         return {
             apiKey: null,
             baseUrl: 'https://apis.iflow.cn/v1',
@@ -1256,6 +1256,17 @@ function App() {
                                 </div>
                             </button>
                             <button
+                                className={`model-option ${selectedModel === 'deepseek-r1' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('deepseek-r1')}
+                                style={selectedModel === 'deepseek-r1' ? { borderColor: '#a855f7', background: 'rgba(168,85,247,0.12)' } : {}}
+                            >
+                                <span className="model-option-dot" style={{ background: '#a855f7' }} />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-R1 🧠</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>深度思考 · 慢而准</div>
+                                </div>
+                            </button>
+                            <button
                                 className={`model-option ${selectedModel === 'qwen3-coder' ? 'active' : ''}`}
                                 onClick={() => handleModelChange('qwen3-coder')}
                             >
@@ -1308,7 +1319,7 @@ function App() {
                 {/* 状态栏 */}
                 <div className="status-bar">
                     <span className={`status-dot ${apiStatus.hasApiKey ? 'online' : 'offline'}`} />
-                    <span>{apiStatus.hasApiKey ? '心流平台已连接' : '未连接'}</span>
+                    <span>{apiStatus.hasApiKey ? '已连接' : '未连接'}</span>
                 </div>
             </div>
 
@@ -1320,600 +1331,600 @@ function App() {
                     showToast={showToast}
                 />
             ) : (
-            <>
-            <div className="main-content">
-                {/* Top Bar */}
-                <div className="top-bar">
-                    <div className="top-bar-left">
-                        <span className="top-bar-title">COSMIC 功能规模智能分析</span>
-                        {tableData.length > 0 && (
-                            <span className="top-bar-badge">
-                                {[...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))].length} 个功能过程 · {tableData.length} CFP
-                            </span>
-                        )}
-                    </div>
-                    <div className="top-bar-right">
-                        {tableData.length > 0 && (
-                            <>
-                                <button className="btn btn-secondary btn-sm" onClick={() => setShowTableView(true)}>
-                                    <Table size={14} /> 查看表格
+                <>
+                    <div className="main-content">
+                        {/* Top Bar */}
+                        <div className="top-bar">
+                            <div className="top-bar-left">
+                                <span className="top-bar-title">COSMIC 功能规模智能分析</span>
+                                {tableData.length > 0 && (
+                                    <span className="top-bar-badge">
+                                        {[...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))].length} 个功能过程 · {tableData.length} CFP
+                                    </span>
+                                )}
+                            </div>
+                            <div className="top-bar-right">
+                                {tableData.length > 0 && (
+                                    <>
+                                        <button className="btn btn-secondary btn-sm" onClick={() => setShowTableView(true)}>
+                                            <Table size={14} /> 查看表格
+                                        </button>
+                                        <button className="btn btn-success btn-sm" onClick={exportExcel}>
+                                            <Download size={14} /> 导出Excel
+                                        </button>
+                                    </>
+                                )}
+                                <button className="btn btn-ghost btn-icon" onClick={clearChat} title="清空对话">
+                                    <Trash2 size={16} />
                                 </button>
-                                <button className="btn btn-success btn-sm" onClick={exportExcel}>
-                                    <Download size={14} /> 导出Excel
-                                </button>
-                            </>
-                        )}
-                        <button className="btn btn-ghost btn-icon" onClick={clearChat} title="清空对话">
-                            <Trash2 size={16} />
-                        </button>
-                    </div>
-                </div>
-
-                {/* Document Info Bar */}
-                {documentName && (
-                    <div className="doc-info-bar">
-                        <FileText size={14} style={{ color: 'var(--accent-violet)' }} />
-                        <span className="doc-info-name">{documentName}</span>
-                        <span className="doc-info-stats">{documentContent.length} 字符</span>
-                        <div className="doc-info-actions">
-                            <button className="btn btn-ghost btn-sm" onClick={() => setShowPreview(true)}>
-                                <Eye size={13} /> 预览
-                            </button>
+                            </div>
                         </div>
-                    </div>
-                )}
 
-                {/* Error Banner */}
-                {errorMessage && (
-                    <div className="error-banner">
-                        <AlertCircle size={16} />
-                        {errorMessage}
-                        <button className="btn btn-ghost btn-sm" onClick={() => setErrorMessage('')} style={{ marginLeft: 'auto' }}>
-                            <X size={14} />
-                        </button>
-                    </div>
-                )}
-
-                {/* Upload Progress */}
-                {uploadProgress > 0 && uploadProgress < 100 && (
-                    <div style={{ padding: '0 24px' }}>
-                        <div className="progress-bar-container">
-                            <div className="progress-bar" style={{ width: `${uploadProgress}%` }} />
-                        </div>
-                    </div>
-                )}
-
-                {/* Chat Area */}
-                <div className="chat-area">
-                    {messages.length === 0 && !documentContent ? (
-                        /* Welcome Screen */
-                        <div className="welcome-screen">
-                            <div className="welcome-icon">🔬</div>
-                            <h1 className="welcome-title">COSMIC 智能拆分系统</h1>
-                            <p className="welcome-subtitle">
-                                基于AI大模型的COSMIC功能规模度量工具，自动将需求文档拆分为标准的ERWX数据移动表格
-                            </p>
-                            <div className="welcome-features">
-                                <div className="welcome-feature">
-                                    <div className="welcome-feature-icon violet"><FileText size={18} /></div>
-                                    <h3>智能文档解析</h3>
-                                    <p>支持 .docx, .txt, .md 格式，自动提取功能描述</p>
-                                </div>
-                                <div className="welcome-feature">
-                                    <div className="welcome-feature-icon blue"><Brain size={18} /></div>
-                                    <h3>AI 深度拆分</h3>
-                                    <p>DeepSeek-V3 / Qwen3 双模型，精准ERWX拆分</p>
-                                </div>
-                                <div className="welcome-feature">
-                                    <div className="welcome-feature-icon cyan"><BarChart3 size={18} /></div>
-                                    <h3>专业级输出</h3>
-                                    <p>标准Markdown表格 + Excel导出，直接交付使用</p>
+                        {/* Document Info Bar */}
+                        {documentName && (
+                            <div className="doc-info-bar">
+                                <FileText size={14} style={{ color: 'var(--accent-violet)' }} />
+                                <span className="doc-info-name">{documentName}</span>
+                                <span className="doc-info-stats">{documentContent.length} 字符</span>
+                                <div className="doc-info-actions">
+                                    <button className="btn btn-ghost btn-sm" onClick={() => setShowPreview(true)}>
+                                        <Eye size={13} /> 预览
+                                    </button>
                                 </div>
                             </div>
+                        )}
 
-                            {/* Upload Zone */}
-                            <div
-                                ref={dropZoneRef}
-                                className={`upload-zone ${isDragging ? 'dragging' : ''}`}
-                                onClick={() => fileInputRef.current?.click()}
-                                onDragEnter={handleDragEnter}
-                                onDragLeave={handleDragLeave}
-                                onDragOver={handleDragOver}
-                                onDrop={handleDrop}
-                            >
-                                <div className="upload-zone-icon">📂</div>
-                                <h3>上传需求文档</h3>
-                                <p>拖拽文件到此处，或点击选择文件</p>
-                                <p style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>支持 .docx, .txt, .md 格式</p>
+                        {/* Error Banner */}
+                        {errorMessage && (
+                            <div className="error-banner">
+                                <AlertCircle size={16} />
+                                {errorMessage}
+                                <button className="btn btn-ghost btn-sm" onClick={() => setErrorMessage('')} style={{ marginLeft: 'auto' }}>
+                                    <X size={14} />
+                                </button>
                             </div>
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                accept=".docx,.txt,.md"
-                                onChange={handleFileSelect}
-                                style={{ display: 'none' }}
-                            />
-                        </div>
-                    ) : (
-                        /* Messages */
-                        <>
-                            {messages.map((msg, idx) => (
-                                <div key={idx} className={`message ${msg.role}`}>
-                                    <div className="message-avatar">
-                                        {msg.role === 'assistant' ? <Bot size={16} /> :
-                                            msg.role === 'user' ? <User size={16} /> :
-                                                <Info size={16} />}
+                        )}
+
+                        {/* Upload Progress */}
+                        {uploadProgress > 0 && uploadProgress < 100 && (
+                            <div style={{ padding: '0 24px' }}>
+                                <div className="progress-bar-container">
+                                    <div className="progress-bar" style={{ width: `${uploadProgress}%` }} />
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Chat Area */}
+                        <div className="chat-area">
+                            {messages.length === 0 && !documentContent ? (
+                                /* Welcome Screen */
+                                <div className="welcome-screen">
+                                    <div className="welcome-icon">🔬</div>
+                                    <h1 className="welcome-title">COSMIC 智能拆分系统</h1>
+                                    <p className="welcome-subtitle">
+                                        基于AI大模型的COSMIC功能规模度量工具，自动将需求文档拆分为标准的ERWX数据移动表格
+                                    </p>
+                                    <div className="welcome-features">
+                                        <div className="welcome-feature">
+                                            <div className="welcome-feature-icon violet"><FileText size={18} /></div>
+                                            <h3>智能文档解析</h3>
+                                            <p>支持 .docx, .txt, .md 格式，自动提取功能描述</p>
+                                        </div>
+                                        <div className="welcome-feature">
+                                            <div className="welcome-feature-icon blue"><Brain size={18} /></div>
+                                            <h3>AI 深度拆分</h3>
+                                            <p>DeepSeek-V3 / Qwen3 双模型，精准ERWX拆分</p>
+                                        </div>
+                                        <div className="welcome-feature">
+                                            <div className="welcome-feature-icon cyan"><BarChart3 size={18} /></div>
+                                            <h3>专业级输出</h3>
+                                            <p>标准Markdown表格 + Excel导出，直接交付使用</p>
+                                        </div>
                                     </div>
-                                    <div className="message-content">
-                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                                        {msg.showActions && tableData.length > 0 && (
-                                            <div className="result-actions">
-                                                <button className="btn btn-primary btn-sm" onClick={() => setShowTableView(true)}>
-                                                    <Table size={14} /> 查看表格
-                                                </button>
-                                                <button className="btn btn-success btn-sm" onClick={exportExcel}>
-                                                    <Download size={14} /> 导出Excel
-                                                </button>
-                                                <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying || isLoading}>
-                                                    {isVerifying ? <Loader2 size={14} className="spinner" /> : <Target size={14} />} 覆盖度验证
-                                                </button>
+
+                                    {/* Upload Zone */}
+                                    <div
+                                        ref={dropZoneRef}
+                                        className={`upload-zone ${isDragging ? 'dragging' : ''}`}
+                                        onClick={() => fileInputRef.current?.click()}
+                                        onDragEnter={handleDragEnter}
+                                        onDragLeave={handleDragLeave}
+                                        onDragOver={handleDragOver}
+                                        onDrop={handleDrop}
+                                    >
+                                        <div className="upload-zone-icon">📂</div>
+                                        <h3>上传需求文档</h3>
+                                        <p>拖拽文件到此处，或点击选择文件</p>
+                                        <p style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>支持 .docx, .txt, .md 格式</p>
+                                    </div>
+                                    <input
+                                        ref={fileInputRef}
+                                        type="file"
+                                        accept=".docx,.txt,.md"
+                                        onChange={handleFileSelect}
+                                        style={{ display: 'none' }}
+                                    />
+                                </div>
+                            ) : (
+                                /* Messages */
+                                <>
+                                    {messages.map((msg, idx) => (
+                                        <div key={idx} className={`message ${msg.role}`}>
+                                            <div className="message-avatar">
+                                                {msg.role === 'assistant' ? <Bot size={16} /> :
+                                                    msg.role === 'user' ? <User size={16} /> :
+                                                        <Info size={16} />}
                                             </div>
-                                        )}
-                                        {msg.showCoverageActions && (
-                                            <div className="result-actions">
-                                                <button className="btn btn-primary btn-sm" onClick={extractSupplementary} disabled={isLoading}>
-                                                    <Plus size={14} /> 补充提取
-                                                </button>
-                                                <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying || isLoading}>
-                                                    <RefreshCw size={14} /> 重新验证
-                                                </button>
+                                            <div className="message-content">
+                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                                {msg.showActions && tableData.length > 0 && (
+                                                    <div className="result-actions">
+                                                        <button className="btn btn-primary btn-sm" onClick={() => setShowTableView(true)}>
+                                                            <Table size={14} /> 查看表格
+                                                        </button>
+                                                        <button className="btn btn-success btn-sm" onClick={exportExcel}>
+                                                            <Download size={14} /> 导出Excel
+                                                        </button>
+                                                        <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying || isLoading}>
+                                                            {isVerifying ? <Loader2 size={14} className="spinner" /> : <Target size={14} />} 覆盖度验证
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {msg.showCoverageActions && (
+                                                    <div className="result-actions">
+                                                        <button className="btn btn-primary btn-sm" onClick={extractSupplementary} disabled={isLoading}>
+                                                            <Plus size={14} /> 补充提取
+                                                        </button>
+                                                        <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying || isLoading}>
+                                                            <RefreshCw size={14} /> 重新验证
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {msg.showChapterActions && chapters.length > 0 && (
+                                                    <div className="result-actions">
+                                                        <button className="btn btn-secondary btn-sm" onClick={() => setShowChapterView(true)}>
+                                                            <Eye size={14} /> 查看/编辑章节
+                                                        </button>
+                                                        <button className="btn btn-primary btn-sm" onClick={() => startFunctionExtractionFromChapters()} disabled={isLoading}>
+                                                            <Target size={14} /> 确认·开始提取
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {msg.showFunctionListActions && parsedFunctions.length > 0 && (
+                                                    <div className="result-actions">
+                                                        <button className="btn btn-primary btn-sm" onClick={openFunctionEditor}>
+                                                            <Edit3 size={14} /> 查看/编辑功能列表
+                                                        </button>
+                                                        <button className="btn btn-success btn-sm" onClick={startCosmicSplit} disabled={isLoading}>
+                                                            <Sparkles size={14} /> 确认·开始COSMIC拆分
+                                                        </button>
+                                                    </div>
+                                                )}
                                             </div>
+                                        </div>
+                                    ))}
+                                    {streamingContent && (
+                                        <div className="message assistant">
+                                            <div className="message-avatar"><Bot size={16} /></div>
+                                            <div className="message-content">
+                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {isLoading && !streamingContent && (
+                                        <div className="message assistant">
+                                            <div className="message-avatar"><Bot size={16} /></div>
+                                            <div className="message-content" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                <Loader2 size={16} className="spinner" />
+                                                <span>AI 正在分析...</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                    <div ref={messagesEndRef} />
+                                </>
+                            )}
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="input-area">
+                            {/* Action Buttons */}
+                            {documentContent && (
+                                <div className="input-actions" style={{ marginBottom: 8 }}>
+                                    <div className="input-actions-left">
+                                        {/* 两步骤模式按钮 */}
+                                        {currentStep === 0 && (
+                                            <>
+                                                <button
+                                                    className="btn btn-primary"
+                                                    onClick={startFunctionExtraction}
+                                                    disabled={isLoading}
+                                                >
+                                                    <Target size={14} /> 两步骤拆分
+                                                </button>
+                                                <button
+                                                    className="btn btn-secondary"
+                                                    onClick={startOneKeyAnalysis}
+                                                    disabled={isLoading}
+                                                >
+                                                    <Zap size={14} /> 一键拆分
+                                                </button>
+                                                {parsedFunctions.length > 0 && (
+                                                    <>
+                                                        <button className="btn btn-secondary" onClick={openFunctionEditor}>
+                                                            <Edit3 size={14} /> 编辑功能列表 ({parsedFunctions.filter(f => f.selected !== false).length})
+                                                        </button>
+                                                        <button className="btn btn-primary" onClick={startCosmicSplit} disabled={isLoading}>
+                                                            <Sparkles size={14} /> 重新COSMIC拆分
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </>
                                         )}
-                                        {msg.showChapterActions && chapters.length > 0 && (
-                                            <div className="result-actions">
-                                                <button className="btn btn-secondary btn-sm" onClick={() => setShowChapterView(true)}>
+                                        {currentStep === 2 && (
+                                            <>
+                                                <button className="btn btn-secondary" onClick={() => setShowChapterView(true)}>
                                                     <Eye size={14} /> 查看/编辑章节
                                                 </button>
-                                                <button className="btn btn-primary btn-sm" onClick={() => startFunctionExtractionFromChapters()} disabled={isLoading}>
-                                                    <Target size={14} /> 确认·开始提取
-                                                </button>
-                                            </div>
-                                        )}
-                                        {msg.showFunctionListActions && parsedFunctions.length > 0 && (
-                                            <div className="result-actions">
-                                                <button className="btn btn-primary btn-sm" onClick={openFunctionEditor}>
-                                                    <Edit3 size={14} /> 查看/编辑功能列表
-                                                </button>
-                                                <button className="btn btn-success btn-sm" onClick={startCosmicSplit} disabled={isLoading}>
-                                                    <Sparkles size={14} /> 确认·开始COSMIC拆分
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
-                            {streamingContent && (
-                                <div className="message assistant">
-                                    <div className="message-avatar"><Bot size={16} /></div>
-                                    <div className="message-content">
-                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
-                                    </div>
-                                </div>
-                            )}
-                            {isLoading && !streamingContent && (
-                                <div className="message assistant">
-                                    <div className="message-avatar"><Bot size={16} /></div>
-                                    <div className="message-content" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                        <Loader2 size={16} className="spinner" />
-                                        <span>AI 正在分析...</span>
-                                    </div>
-                                </div>
-                            )}
-                            <div ref={messagesEndRef} />
-                        </>
-                    )}
-                </div>
-
-                {/* Input Area */}
-                <div className="input-area">
-                    {/* Action Buttons */}
-                    {documentContent && (
-                        <div className="input-actions" style={{ marginBottom: 8 }}>
-                            <div className="input-actions-left">
-                                {/* 两步骤模式按钮 */}
-                                {currentStep === 0 && (
-                                    <>
-                                        <button
-                                            className="btn btn-primary"
-                                            onClick={startFunctionExtraction}
-                                            disabled={isLoading}
-                                        >
-                                            <Target size={14} /> 两步骤拆分
-                                        </button>
-                                        <button
-                                            className="btn btn-secondary"
-                                            onClick={startOneKeyAnalysis}
-                                            disabled={isLoading}
-                                        >
-                                            <Zap size={14} /> 一键拆分
-                                        </button>
-                                        {parsedFunctions.length > 0 && (
-                                            <>
-                                                <button className="btn btn-secondary" onClick={openFunctionEditor}>
-                                                    <Edit3 size={14} /> 编辑功能列表 ({parsedFunctions.filter(f => f.selected !== false).length})
-                                                </button>
-                                                <button className="btn btn-primary" onClick={startCosmicSplit} disabled={isLoading}>
-                                                    <Sparkles size={14} /> 重新COSMIC拆分
+                                                <button className="btn btn-primary" onClick={() => startFunctionExtractionFromChapters()} disabled={isLoading}>
+                                                    <Target size={14} /> 确认章节·开始提取
                                                 </button>
                                             </>
                                         )}
-                                    </>
-                                )}
-                                {currentStep === 2 && (
-                                    <>
-                                        <button className="btn btn-secondary" onClick={() => setShowChapterView(true)}>
-                                            <Eye size={14} /> 查看/编辑章节
-                                        </button>
-                                        <button className="btn btn-primary" onClick={() => startFunctionExtractionFromChapters()} disabled={isLoading}>
-                                            <Target size={14} /> 确认章节·开始提取
-                                        </button>
-                                    </>
-                                )}
-                                {currentStep === 3 && (
-                                    <>
-                                        <button className="btn btn-secondary" onClick={openFunctionEditor}>
-                                            <Edit3 size={14} /> 查看/编辑功能列表 ({parsedFunctions.filter(f => f.selected !== false).length})
-                                        </button>
-                                        <button className="btn btn-primary" onClick={startCosmicSplit} disabled={isLoading}>
-                                            <Sparkles size={14} /> 开始COSMIC拆分
-                                        </button>
-                                    </>
-                                )}
-                                {isLoading && (
-                                    <button className="btn btn-secondary btn-sm" onClick={stopAnalysis}>
-                                        <X size={14} /> 停止分析
-                                    </button>
-                                )}
-                                {!documentContent && (
-                                    <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}>
-                                        <Upload size={14} /> 上传文档
-                                    </button>
-                                )}
-                            </div>
-                            <div style={{ display: 'flex', gap: 4 }}>
-                                {tableData.length > 0 && !isLoading && currentStep === 0 && (
-                                    <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying}>
-                                        {isVerifying ? <Loader2 size={13} className="spinner" /> : <Target size={13} />} 覆盖度验证
-                                    </button>
-                                )}
-                                {documentContent && !isLoading && currentStep === 0 && (
-                                    <button className="btn btn-ghost btn-sm" onClick={() => fileInputRef.current?.click()}>
-                                        <RefreshCw size={13} /> 重新上传
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    )}
+                                        {currentStep === 3 && (
+                                            <>
+                                                <button className="btn btn-secondary" onClick={openFunctionEditor}>
+                                                    <Edit3 size={14} /> 查看/编辑功能列表 ({parsedFunctions.filter(f => f.selected !== false).length})
+                                                </button>
+                                                <button className="btn btn-primary" onClick={startCosmicSplit} disabled={isLoading}>
+                                                    <Sparkles size={14} /> 开始COSMIC拆分
+                                                </button>
+                                            </>
+                                        )}
+                                        {isLoading && (
+                                            <button className="btn btn-secondary btn-sm" onClick={stopAnalysis}>
+                                                <X size={14} /> 停止分析
+                                            </button>
+                                        )}
+                                        {!documentContent && (
+                                            <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}>
+                                                <Upload size={14} /> 上传文档
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 4 }}>
+                                        {tableData.length > 0 && !isLoading && currentStep === 0 && (
+                                            <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying}>
+                                                {isVerifying ? <Loader2 size={13} className="spinner" /> : <Target size={13} />} 覆盖度验证
+                                            </button>
+                                        )}
+                                        {documentContent && !isLoading && currentStep === 0 && (
+                                            <button className="btn btn-ghost btn-sm" onClick={() => fileInputRef.current?.click()}>
+                                                <RefreshCw size={13} /> 重新上传
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
 
-                    {/* Chat Input */}
-                    <div className="input-row">
-                        <div className="input-wrapper">
-                            <textarea
-                                className="input-textarea"
-                                placeholder={documentContent ? '输入特殊要求或追问...' : '请先上传需求文档...'}
-                                value={inputText}
-                                onChange={e => setInputText(e.target.value)}
-                                onKeyDown={handleKeyDown}
-                                disabled={isLoading}
-                                rows={1}
-                            />
-                        </div>
-                        <button
-                            className="btn btn-primary btn-icon"
-                            onClick={sendMessage}
-                            disabled={isLoading || !inputText.trim()}
-                            title="发送消息"
-                        >
-                            <Send size={16} />
-                        </button>
-                    </div>
-
-                    {/* Hidden file input for re-upload */}
-                    {!messages.length && !documentContent ? null : (
-                        <input ref={fileInputRef} type="file" accept=".docx,.txt,.md" onChange={handleFileSelect} style={{ display: 'none' }} />
-                    )}
-                </div>
-            </div>
-
-            {/* ═══ Chapter Selection Modal ═══ */}
-            {showChapterView && (
-                <div className="table-view-overlay" onClick={() => setShowChapterView(false)}>
-                    <div className="table-view-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 700 }}>
-                        <div className="table-view-header">
-                            <h2><FileText size={18} /> 章节列表</h2>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                                    已选 {chapters.filter(ch => ch.selected).length}/{chapters.length} 章节
-                                </span>
-                                <button className="btn btn-ghost btn-sm" onClick={() => {
-                                    const allSelected = chapters.every(ch => ch.selected);
-                                    setChapters(prev => prev.map(ch => ({ ...ch, selected: !allSelected })));
-                                }}>
-                                    {chapters.every(ch => ch.selected) ? '取消全选' : '全选'}
-                                </button>
-                                <button className="btn btn-ghost btn-icon" onClick={() => setShowChapterView(false)}>
-                                    <X size={18} />
-                                </button>
-                            </div>
-                        </div>
-                        <div className="table-view-body" style={{ padding: 16 }}>
-                            {chapters.map((ch, idx) => (
-                                <div
-                                    key={idx}
-                                    className="chapter-item"
-                                    style={{
-                                        display: 'flex', alignItems: 'flex-start', gap: 12,
-                                        padding: '12px 16px', borderRadius: 'var(--radius-sm)',
-                                        border: `1px solid ${ch.selected ? 'var(--border-active)' : 'var(--border-subtle)'}`,
-                                        background: ch.selected ? 'rgba(108, 92, 231, 0.03)' : 'transparent',
-                                        marginBottom: 8, cursor: 'pointer',
-                                        transition: 'all 0.15s ease'
-                                    }}
-                                    onClick={() => toggleChapter(idx)}
-                                >
-                                    <input
-                                        type="checkbox" checked={ch.selected}
-                                        onChange={() => toggleChapter(idx)}
-                                        style={{ marginTop: 3, cursor: 'pointer', accentColor: 'var(--accent-violet)' }}
+                            {/* Chat Input */}
+                            <div className="input-row">
+                                <div className="input-wrapper">
+                                    <textarea
+                                        className="input-textarea"
+                                        placeholder={documentContent ? '输入特殊要求或追问...' : '请先上传需求文档...'}
+                                        value={inputText}
+                                        onChange={e => setInputText(e.target.value)}
+                                        onKeyDown={handleKeyDown}
+                                        disabled={isLoading}
+                                        rows={1}
                                     />
-                                    <div style={{ flex: 1 }}>
-                                        <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', marginBottom: 4 }}>
-                                            {idx + 1}. {ch.title}
-                                        </div>
-                                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                                            {ch.charCount} 字
-                                        </div>
-                                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.5, maxHeight: 60, overflow: 'hidden' }}>
-                                            {ch.content.substring(0, 200)}...
-                                        </div>
-                                    </div>
                                 </div>
-                            ))}
-                        </div>
-                        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                            <button className="btn btn-secondary" onClick={() => setShowChapterView(false)}>
-                                关闭
-                            </button>
-                            <button className="btn btn-primary" onClick={() => { setShowChapterView(false); startFunctionExtractionFromChapters(); }} disabled={chapters.filter(ch => ch.selected).length === 0}>
-                                <Target size={14} /> 确认·开始提取 ({chapters.filter(ch => ch.selected).length}个章节)
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* ═══ Table View Modal ═══ */}
-            {showTableView && (
-                <div className="table-view-overlay" onClick={() => setShowTableView(false)}>
-                    <div className="table-view-panel" onClick={e => e.stopPropagation()}>
-                        <div className="table-view-header">
-                            <h2><Table size={18} /> COSMIC 拆分结果表格</h2>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                                <div className="table-view-stats">
-                                    <div className="table-stat">
-                                        功能过程: <span className="table-stat-value">{[...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))].length}</span>
-                                    </div>
-                                    <div className="table-stat">
-                                        子过程: <span className="table-stat-value">{tableData.length}</span>
-                                    </div>
-                                    <div className="table-stat">
-                                        <span className="dmt-badge dmt-e" style={{ width: 20, height: 20, fontSize: 10 }}>E</span> {tableData.filter(r => r.dataMovementType === 'E').length}
-                                    </div>
-                                    <div className="table-stat">
-                                        <span className="dmt-badge dmt-r" style={{ width: 20, height: 20, fontSize: 10 }}>R</span> {tableData.filter(r => r.dataMovementType === 'R').length}
-                                    </div>
-                                    <div className="table-stat">
-                                        <span className="dmt-badge dmt-w" style={{ width: 20, height: 20, fontSize: 10 }}>W</span> {tableData.filter(r => r.dataMovementType === 'W').length}
-                                    </div>
-                                    <div className="table-stat">
-                                        <span className="dmt-badge dmt-x" style={{ width: 20, height: 20, fontSize: 10 }}>X</span> {tableData.filter(r => r.dataMovementType === 'X').length}
-                                    </div>
-                                </div>
-                                <button className="btn btn-success btn-sm" onClick={exportExcel}>
-                                    <Download size={14} /> 导出Excel
-                                </button>
-                                <button className="btn btn-ghost btn-icon" onClick={() => setShowTableView(false)}>
-                                    <X size={18} />
+                                <button
+                                    className="btn btn-primary btn-icon"
+                                    onClick={sendMessage}
+                                    disabled={isLoading || !inputText.trim()}
+                                    title="发送消息"
+                                >
+                                    <Send size={16} />
                                 </button>
                             </div>
-                        </div>
-                        <div className="table-view-body">
-                            <table className="data-table">
-                                <thead>
-                                    <tr>
-                                        <th style={{ width: '4%' }}>#</th>
-                                        <th style={{ width: '14%' }}>功能用户</th>
-                                        <th style={{ width: '8%' }}>触发事件</th>
-                                        <th style={{ width: '14%' }}>功能过程</th>
-                                        <th style={{ width: '16%' }}>子过程描述</th>
-                                        <th style={{ width: '6%' }}>类型</th>
-                                        <th style={{ width: '14%' }}>数据组</th>
-                                        <th style={{ width: '24%' }}>数据属性</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {tableData.map((row, idx) => (
-                                        <tr key={idx} className={row.dataMovementType === 'E' ? 'row-e' : ''}>
-                                            <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{idx + 1}</td>
-                                            <td>{row.dataMovementType === 'E' ? row.functionalUser : ''}</td>
-                                            <td>{row.dataMovementType === 'E' ? row.triggerEvent : ''}</td>
-                                            <td style={{ fontWeight: row.functionalProcess ? 600 : 400, color: row.functionalProcess ? 'var(--text-primary)' : '' }}>
-                                                {row.functionalProcess}
-                                            </td>
-                                            <td>{row.subProcessDesc}</td>
-                                            <td style={{ textAlign: 'center' }}>
-                                                <span className={`dmt-badge dmt-${row.dataMovementType?.toLowerCase()}`}>{row.dataMovementType}</span>
-                                            </td>
-                                            <td>{row.dataGroup}</td>
-                                            <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.dataAttributes}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            )}
 
-            {/* ═══ Document Preview Modal ═══ */}
-            {showPreview && (
-                <div className="preview-overlay" onClick={() => setShowPreview(false)}>
-                    <div className="preview-panel" onClick={e => e.stopPropagation()}>
-                        <div className="preview-header">
-                            <h2>📄 {documentName}</h2>
-                            <div style={{ display: 'flex', gap: 8 }}>
-                                <button className="btn btn-ghost btn-sm" onClick={() => copyContent(documentContent)}>
-                                    {copied ? <Check size={13} /> : <Copy size={13} />} 复制
-                                </button>
-                                <button className="btn btn-ghost btn-icon" onClick={() => setShowPreview(false)}>
-                                    <X size={16} />
-                                </button>
-                            </div>
-                        </div>
-                        <div className="preview-body">{documentContent}</div>
-                    </div>
-                </div>
-            )}
-
-            {/* ═══ Function List Editor Modal (Structured) ═══ */}
-            {showFunctionListEditor && (
-                <div className="function-list-panel" onClick={() => setShowFunctionListEditor(false)}>
-                    <div className="func-editor-container" onClick={e => e.stopPropagation()}>
-                        <div className="func-editor-header">
-                            <div className="func-editor-header-left">
-                                <h2><Edit3 size={18} /> 功能过程列表编辑</h2>
-                                <span className="func-editor-count">
-                                    共 {parsedFunctions.length} 个 · 已选 {parsedFunctions.filter(f => f.selected !== false).length} 个
-                                </span>
-                            </div>
-                            <div className="func-editor-header-right">
-                                <button className="btn btn-secondary btn-sm" onClick={addFunction}>
-                                    <Plus size={14} /> 新增功能
-                                </button>
-                                <button className="btn btn-ghost btn-icon" onClick={() => setShowFunctionListEditor(false)}>
-                                    <X size={18} />
-                                </button>
-                            </div>
-                        </div>
-
-                        {/* 表格头 */}
-                        <div className="func-editor-table-header">
-                            <div className="func-col func-col-check">选中</div>
-                            <div className="func-col func-col-idx">#</div>
-                            <div className="func-col func-col-trigger">触发事件</div>
-                            <div className="func-col func-col-user">功能用户</div>
-                            <div className="func-col func-col-name">功能过程名称</div>
-                            <div className="func-col func-col-desc">功能过程描述</div>
-                            <div className="func-col func-col-actions">操作</div>
-                        </div>
-
-                        <div className="func-editor-body">
-                            {parsedFunctions.length === 0 ? (
-                                <div className="func-editor-empty">
-                                    <p>暂无功能过程数据</p>
-                                    <button className="btn btn-primary btn-sm" onClick={addFunction}>
-                                        <Plus size={14} /> 添加第一个功能过程
-                                    </button>
-                                </div>
-                            ) : (
-                                parsedFunctions.map((func, idx) => (
-                                    <div
-                                        key={func.id || idx}
-                                        className={`func-editor-row ${func.selected === false ? 'disabled' : ''} ${editingFunctionIndex === idx ? 'editing' : ''}`}
-                                    >
-                                        <div className="func-col func-col-check">
-                                            <input
-                                                type="checkbox"
-                                                checked={func.selected !== false}
-                                                onChange={() => toggleFunctionSelected(idx)}
-                                                style={{ accentColor: 'var(--accent-violet)', cursor: 'pointer' }}
-                                            />
-                                        </div>
-                                        <div className="func-col func-col-idx">
-                                            <span className="func-idx-badge">{idx + 1}</span>
-                                        </div>
-                                        <div className="func-col func-col-trigger">
-                                            <select
-                                                className="func-select"
-                                                value={func.triggerEvent || '用户触发'}
-                                                onChange={e => updateFunction(idx, 'triggerEvent', e.target.value)}
-                                            >
-                                                <option value="用户触发">用户触发</option>
-                                                <option value="时钟触发">时钟触发</option>
-                                                <option value="接口调用触发">接口调用触发</option>
-                                            </select>
-                                        </div>
-                                        <div className="func-col func-col-user">
-                                            <input
-                                                className="func-input"
-                                                value={func.functionalUser || ''}
-                                                onChange={e => updateFunction(idx, 'functionalUser', e.target.value)}
-                                                placeholder="发起者：用户 接收者：用户"
-                                            />
-                                        </div>
-                                        <div className="func-col func-col-name">
-                                            <input
-                                                className="func-input func-input-name"
-                                                value={func.functionName || ''}
-                                                onChange={e => updateFunction(idx, 'functionName', e.target.value)}
-                                                placeholder="请输入功能过程名称"
-                                            />
-                                        </div>
-                                        <div className="func-col func-col-desc">
-                                            <input
-                                                className="func-input"
-                                                value={func.description || ''}
-                                                onChange={e => updateFunction(idx, 'description', e.target.value)}
-                                                placeholder="功能过程描述..."
-                                            />
-                                        </div>
-                                        <div className="func-col func-col-actions">
-                                            <button
-                                                className="func-action-btn" title="拆分为两个功能"
-                                                onClick={() => splitFunction(idx)}
-                                            >
-                                                <Scissors size={13} />
-                                            </button>
-                                            <button
-                                                className="func-action-btn danger" title="删除此功能"
-                                                onClick={() => deleteFunction(idx)}
-                                            >
-                                                <Trash2 size={13} />
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))
+                            {/* Hidden file input for re-upload */}
+                            {!messages.length && !documentContent ? null : (
+                                <input ref={fileInputRef} type="file" accept=".docx,.txt,.md" onChange={handleFileSelect} style={{ display: 'none' }} />
                             )}
                         </div>
+                    </div>
 
-                        <div className="func-editor-footer">
-                            <div className="func-editor-footer-info">
-                                <Info size={14} style={{ color: 'var(--text-muted)' }} />
-                                <span>可直接点击表格字段编辑 · 拆分可将一个功能过程复制为两个 · 取消选中的功能不会参与COSMIC拆分</span>
-                            </div>
-                            <div className="func-editor-footer-actions">
-                                <button className="btn btn-secondary" onClick={() => setShowFunctionListEditor(false)}>
-                                    取消
-                                </button>
-                                <button className="btn btn-primary" onClick={saveFunctionEdits}>
-                                    <Save size={14} /> 保存修改
-                                </button>
+                    {/* ═══ Chapter Selection Modal ═══ */}
+                    {showChapterView && (
+                        <div className="table-view-overlay" onClick={() => setShowChapterView(false)}>
+                            <div className="table-view-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 700 }}>
+                                <div className="table-view-header">
+                                    <h2><FileText size={18} /> 章节列表</h2>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                        <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                            已选 {chapters.filter(ch => ch.selected).length}/{chapters.length} 章节
+                                        </span>
+                                        <button className="btn btn-ghost btn-sm" onClick={() => {
+                                            const allSelected = chapters.every(ch => ch.selected);
+                                            setChapters(prev => prev.map(ch => ({ ...ch, selected: !allSelected })));
+                                        }}>
+                                            {chapters.every(ch => ch.selected) ? '取消全选' : '全选'}
+                                        </button>
+                                        <button className="btn btn-ghost btn-icon" onClick={() => setShowChapterView(false)}>
+                                            <X size={18} />
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="table-view-body" style={{ padding: 16 }}>
+                                    {chapters.map((ch, idx) => (
+                                        <div
+                                            key={idx}
+                                            className="chapter-item"
+                                            style={{
+                                                display: 'flex', alignItems: 'flex-start', gap: 12,
+                                                padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+                                                border: `1px solid ${ch.selected ? 'var(--border-active)' : 'var(--border-subtle)'}`,
+                                                background: ch.selected ? 'rgba(108, 92, 231, 0.03)' : 'transparent',
+                                                marginBottom: 8, cursor: 'pointer',
+                                                transition: 'all 0.15s ease'
+                                            }}
+                                            onClick={() => toggleChapter(idx)}
+                                        >
+                                            <input
+                                                type="checkbox" checked={ch.selected}
+                                                onChange={() => toggleChapter(idx)}
+                                                style={{ marginTop: 3, cursor: 'pointer', accentColor: 'var(--accent-violet)' }}
+                                            />
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', marginBottom: 4 }}>
+                                                    {idx + 1}. {ch.title}
+                                                </div>
+                                                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                                    {ch.charCount} 字
+                                                </div>
+                                                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.5, maxHeight: 60, overflow: 'hidden' }}>
+                                                    {ch.content.substring(0, 200)}...
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                                    <button className="btn btn-secondary" onClick={() => setShowChapterView(false)}>
+                                        关闭
+                                    </button>
+                                    <button className="btn btn-primary" onClick={() => { setShowChapterView(false); startFunctionExtractionFromChapters(); }} disabled={chapters.filter(ch => ch.selected).length === 0}>
+                                        <Target size={14} /> 确认·开始提取 ({chapters.filter(ch => ch.selected).length}个章节)
+                                    </button>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                </div>
-            )}
-            </>
+                    )}
+
+                    {/* ═══ Table View Modal ═══ */}
+                    {showTableView && (
+                        <div className="table-view-overlay" onClick={() => setShowTableView(false)}>
+                            <div className="table-view-panel" onClick={e => e.stopPropagation()}>
+                                <div className="table-view-header">
+                                    <h2><Table size={18} /> COSMIC 拆分结果表格</h2>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                                        <div className="table-view-stats">
+                                            <div className="table-stat">
+                                                功能过程: <span className="table-stat-value">{[...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))].length}</span>
+                                            </div>
+                                            <div className="table-stat">
+                                                子过程: <span className="table-stat-value">{tableData.length}</span>
+                                            </div>
+                                            <div className="table-stat">
+                                                <span className="dmt-badge dmt-e" style={{ width: 20, height: 20, fontSize: 10 }}>E</span> {tableData.filter(r => r.dataMovementType === 'E').length}
+                                            </div>
+                                            <div className="table-stat">
+                                                <span className="dmt-badge dmt-r" style={{ width: 20, height: 20, fontSize: 10 }}>R</span> {tableData.filter(r => r.dataMovementType === 'R').length}
+                                            </div>
+                                            <div className="table-stat">
+                                                <span className="dmt-badge dmt-w" style={{ width: 20, height: 20, fontSize: 10 }}>W</span> {tableData.filter(r => r.dataMovementType === 'W').length}
+                                            </div>
+                                            <div className="table-stat">
+                                                <span className="dmt-badge dmt-x" style={{ width: 20, height: 20, fontSize: 10 }}>X</span> {tableData.filter(r => r.dataMovementType === 'X').length}
+                                            </div>
+                                        </div>
+                                        <button className="btn btn-success btn-sm" onClick={exportExcel}>
+                                            <Download size={14} /> 导出Excel
+                                        </button>
+                                        <button className="btn btn-ghost btn-icon" onClick={() => setShowTableView(false)}>
+                                            <X size={18} />
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="table-view-body">
+                                    <table className="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th style={{ width: '4%' }}>#</th>
+                                                <th style={{ width: '14%' }}>功能用户</th>
+                                                <th style={{ width: '8%' }}>触发事件</th>
+                                                <th style={{ width: '14%' }}>功能过程</th>
+                                                <th style={{ width: '16%' }}>子过程描述</th>
+                                                <th style={{ width: '6%' }}>类型</th>
+                                                <th style={{ width: '14%' }}>数据组</th>
+                                                <th style={{ width: '24%' }}>数据属性</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {tableData.map((row, idx) => (
+                                                <tr key={idx} className={row.dataMovementType === 'E' ? 'row-e' : ''}>
+                                                    <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{idx + 1}</td>
+                                                    <td>{row.dataMovementType === 'E' ? row.functionalUser : ''}</td>
+                                                    <td>{row.dataMovementType === 'E' ? row.triggerEvent : ''}</td>
+                                                    <td style={{ fontWeight: row.functionalProcess ? 600 : 400, color: row.functionalProcess ? 'var(--text-primary)' : '' }}>
+                                                        {row.functionalProcess}
+                                                    </td>
+                                                    <td>{row.subProcessDesc}</td>
+                                                    <td style={{ textAlign: 'center' }}>
+                                                        <span className={`dmt-badge dmt-${row.dataMovementType?.toLowerCase()}`}>{row.dataMovementType}</span>
+                                                    </td>
+                                                    <td>{row.dataGroup}</td>
+                                                    <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.dataAttributes}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ═══ Document Preview Modal ═══ */}
+                    {showPreview && (
+                        <div className="preview-overlay" onClick={() => setShowPreview(false)}>
+                            <div className="preview-panel" onClick={e => e.stopPropagation()}>
+                                <div className="preview-header">
+                                    <h2>📄 {documentName}</h2>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        <button className="btn btn-ghost btn-sm" onClick={() => copyContent(documentContent)}>
+                                            {copied ? <Check size={13} /> : <Copy size={13} />} 复制
+                                        </button>
+                                        <button className="btn btn-ghost btn-icon" onClick={() => setShowPreview(false)}>
+                                            <X size={16} />
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="preview-body">{documentContent}</div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ═══ Function List Editor Modal (Structured) ═══ */}
+                    {showFunctionListEditor && (
+                        <div className="function-list-panel" onClick={() => setShowFunctionListEditor(false)}>
+                            <div className="func-editor-container" onClick={e => e.stopPropagation()}>
+                                <div className="func-editor-header">
+                                    <div className="func-editor-header-left">
+                                        <h2><Edit3 size={18} /> 功能过程列表编辑</h2>
+                                        <span className="func-editor-count">
+                                            共 {parsedFunctions.length} 个 · 已选 {parsedFunctions.filter(f => f.selected !== false).length} 个
+                                        </span>
+                                    </div>
+                                    <div className="func-editor-header-right">
+                                        <button className="btn btn-secondary btn-sm" onClick={addFunction}>
+                                            <Plus size={14} /> 新增功能
+                                        </button>
+                                        <button className="btn btn-ghost btn-icon" onClick={() => setShowFunctionListEditor(false)}>
+                                            <X size={18} />
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* 表格头 */}
+                                <div className="func-editor-table-header">
+                                    <div className="func-col func-col-check">选中</div>
+                                    <div className="func-col func-col-idx">#</div>
+                                    <div className="func-col func-col-trigger">触发事件</div>
+                                    <div className="func-col func-col-user">功能用户</div>
+                                    <div className="func-col func-col-name">功能过程名称</div>
+                                    <div className="func-col func-col-desc">功能过程描述</div>
+                                    <div className="func-col func-col-actions">操作</div>
+                                </div>
+
+                                <div className="func-editor-body">
+                                    {parsedFunctions.length === 0 ? (
+                                        <div className="func-editor-empty">
+                                            <p>暂无功能过程数据</p>
+                                            <button className="btn btn-primary btn-sm" onClick={addFunction}>
+                                                <Plus size={14} /> 添加第一个功能过程
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        parsedFunctions.map((func, idx) => (
+                                            <div
+                                                key={func.id || idx}
+                                                className={`func-editor-row ${func.selected === false ? 'disabled' : ''} ${editingFunctionIndex === idx ? 'editing' : ''}`}
+                                            >
+                                                <div className="func-col func-col-check">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={func.selected !== false}
+                                                        onChange={() => toggleFunctionSelected(idx)}
+                                                        style={{ accentColor: 'var(--accent-violet)', cursor: 'pointer' }}
+                                                    />
+                                                </div>
+                                                <div className="func-col func-col-idx">
+                                                    <span className="func-idx-badge">{idx + 1}</span>
+                                                </div>
+                                                <div className="func-col func-col-trigger">
+                                                    <select
+                                                        className="func-select"
+                                                        value={func.triggerEvent || '用户触发'}
+                                                        onChange={e => updateFunction(idx, 'triggerEvent', e.target.value)}
+                                                    >
+                                                        <option value="用户触发">用户触发</option>
+                                                        <option value="时钟触发">时钟触发</option>
+                                                        <option value="接口调用触发">接口调用触发</option>
+                                                    </select>
+                                                </div>
+                                                <div className="func-col func-col-user">
+                                                    <input
+                                                        className="func-input"
+                                                        value={func.functionalUser || ''}
+                                                        onChange={e => updateFunction(idx, 'functionalUser', e.target.value)}
+                                                        placeholder="发起者：用户 接收者：用户"
+                                                    />
+                                                </div>
+                                                <div className="func-col func-col-name">
+                                                    <input
+                                                        className="func-input func-input-name"
+                                                        value={func.functionName || ''}
+                                                        onChange={e => updateFunction(idx, 'functionName', e.target.value)}
+                                                        placeholder="请输入功能过程名称"
+                                                    />
+                                                </div>
+                                                <div className="func-col func-col-desc">
+                                                    <input
+                                                        className="func-input"
+                                                        value={func.description || ''}
+                                                        onChange={e => updateFunction(idx, 'description', e.target.value)}
+                                                        placeholder="功能过程描述..."
+                                                    />
+                                                </div>
+                                                <div className="func-col func-col-actions">
+                                                    <button
+                                                        className="func-action-btn" title="拆分为两个功能"
+                                                        onClick={() => splitFunction(idx)}
+                                                    >
+                                                        <Scissors size={13} />
+                                                    </button>
+                                                    <button
+                                                        className="func-action-btn danger" title="删除此功能"
+                                                        onClick={() => deleteFunction(idx)}
+                                                    >
+                                                        <Trash2 size={13} />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+
+                                <div className="func-editor-footer">
+                                    <div className="func-editor-footer-info">
+                                        <Info size={14} style={{ color: 'var(--text-muted)' }} />
+                                        <span>可直接点击表格字段编辑 · 拆分可将一个功能过程复制为两个 · 取消选中的功能不会参与COSMIC拆分</span>
+                                    </div>
+                                    <div className="func-editor-footer-actions">
+                                        <button className="btn btn-secondary" onClick={() => setShowFunctionListEditor(false)}>
+                                            取消
+                                        </button>
+                                        <button className="btn btn-primary" onClick={saveFunctionEdits}>
+                                            <Save size={14} /> 保存修改
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </>
             )}
         </div>
     );

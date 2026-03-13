@@ -1513,6 +1513,26 @@ const REUSE_COEFFICIENTS = {
 };
 
 /**
+ * 重用程度按 低:中:高 = 1:3:6 的比例循环分配
+ * 序列: 低 中 中 中 高 高 高 高 高 高 （每10个一个周期，共 1低3中6高）
+ */
+const REUSE_LEVEL_PATTERN = [
+    '低', '中', '中', '中', '高', '高', '高', '高', '高', '高'
+];
+let _reuseLevelCounter = 0;
+function nextReuseLevel() {
+    const level = REUSE_LEVEL_PATTERN[_reuseLevelCounter % REUSE_LEVEL_PATTERN.length];
+    _reuseLevelCounter++;
+    return level;
+}
+/**
+ * 每次解析新表格前重置计数器，使比例从头计算
+ */
+function resetReuseLevelCounter() {
+    _reuseLevelCounter = 0;
+}
+
+/**
  * NESMA 功能点权重表（类别 × 复杂度 → UFP）
  */
 const FP_WEIGHTS = {
@@ -1532,6 +1552,7 @@ const FP_WEIGHTS = {
  */
 function parseNesmaTable(markdown) {
     if (!markdown) return [];
+    resetReuseLevelCounter(); // 每次解析新表格时，重置比例计数器
     const tableData = [];
     const lines = markdown.split('\n');
     let headerFound = false;
@@ -1598,7 +1619,7 @@ function parseNesmaTable(markdown) {
             // 默认复杂度为 低
             const complexity = '低';
             const fpCount = (FP_WEIGHTS[category] && FP_WEIGHTS[category][complexity]) || 0;
-            const reuseLevel = '低';
+            const reuseLevel = nextReuseLevel(); // 按 低:中:高=1:3:6 比例分配
             const reuseCoeff = REUSE_COEFFICIENTS[reuseLevel] || 1.0;
             const afp = Math.round(fpCount * reuseCoeff * 1000) / 1000;
 
@@ -1647,7 +1668,7 @@ function parseNesmaTable(markdown) {
 
             const complexity = '低';
             const fpCount = (FP_WEIGHTS[category] && FP_WEIGHTS[category][complexity]) || 0;
-            const reuseLevel = '低';
+            const reuseLevel = nextReuseLevel(); // 按 低:中:高=1:3:6 比例分配
             const reuseCoeff = REUSE_COEFFICIENTS[reuseLevel] || 1.0;
             const afp = Math.round(fpCount * reuseCoeff * 1000) / 1000;
 
@@ -1748,9 +1769,11 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
         // 根据模式选择提示词
         const activePrompt = extractionMode === 'quantity' ? NESMA_QUANTITY_PRIORITY_PROMPT : NESMA_FUNCTION_EXTRACTION_PROMPT;
 
-        let userPrompt = `请从以下需求文档中提取所有NESMA功能点：\n\n${content}`;
+        // ── 自动分批阈值：数量优先每批2个模块（约20-30行输出，极稳定），精准模式≤10个模块 ──
+        const BATCH_SIZE = extractionMode === 'quantity' ? 2 : 10;
 
-        // ── 注入三级模块结构作为"脚手架"，确保每个三级模块都被展开 ──
+        // ── 确定活跃模块列表 ──
+        let activeMods = [];
         if (moduleStructure && moduleStructure.modules && moduleStructure.modules.length > 0) {
             // 筛选出与当前章节相关的模块（如果有章节名则过滤，否则全部输出）
             const relevantModules = chapterName
@@ -1763,83 +1786,137 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                   )
                 : moduleStructure.modules;
 
-            const activeMods = relevantModules.length > 0 ? relevantModules : moduleStructure.modules;
+            activeMods = relevantModules.length > 0 ? relevantModules : moduleStructure.modules;
+        }
 
-            if (extractionMode === 'quantity' && quantityPlan && quantityPlan.length > 0) {
-                // ── 数量优先模式 + 规划：按模块注入精确目标数量 ──
-                // 建立 level3 → target 的映射
-                const planMap = {};
-                quantityPlan.forEach(p => {
-                    const key = (p.level3 || '').trim();
-                    if (key) planMap[key] = p.target;
-                });
+        // ── 建立 quantityPlan 映射（level3 → target）──
+        const planMap = {};
+        if (quantityPlan && quantityPlan.length > 0) {
+            quantityPlan.forEach(p => {
+                const key = (p.level3 || '').trim();
+                if (key) planMap[key] = p.target;
+            });
+        }
 
-                const modListWithTarget = activeMods.map(m => {
-                    const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
-                    const l3key = (m.level3 || '').trim();
-                    // 匹配规划中的目标数量（模糊匹配：完整匹配 or 包含关系）
-                    let target = planMap[l3key];
-                    if (!target) {
-                        // 尝试模糊匹配
-                        for (const [key, val] of Object.entries(planMap)) {
-                            if (l3key.includes(key) || key.includes(l3key)) { target = val; break; }
+        // ────────────────────────────────────────────────────────────────
+        // 辅助函数：为一批模块（batchMods）构造 prompt 并调用一次 AI
+        // ────────────────────────────────────────────────────────────────
+        const extractOneBatch = async (batchMods, batchIndex, totalBatches, accumulated) => {
+            let prompt = `请从以下需求文档中提取NESMA功能点：\n\n${content}`;
+
+            if (batchMods.length > 0) {
+                if (extractionMode === 'quantity' && quantityPlan && quantityPlan.length > 0) {
+                    // 数量优先 + 规划
+                    const modListWithTarget = batchMods.map(m => {
+                        const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
+                        const l3key = (m.level3 || '').trim();
+                        let target = planMap[l3key];
+                        if (!target) {
+                            for (const [key, val] of Object.entries(planMap)) {
+                                if (l3key.includes(key) || key.includes(l3key)) { target = val; break; }
+                            }
                         }
-                    }
-                    const targetStr = target ? `【⚡ 目标：至少 ${target} 个功能点，必须强制展开到足够数量！】` : '';
-                    return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs} ${targetStr}`;
-                }).join('\n');
-
-                const totalTarget = quantityPlan.reduce((s, p) => s + (p.target || 0), 0) || targetFpCount || 300;
-                userPrompt += `\n\n## ⚠️ 数量优先·模块覆盖清单（每个模块必须达到目标数量！）\n\n**全局目标：本文档总计至少提取 ${totalTarget} 个功能点，每个三级模块必须严格达到括号内的目标数量。**\n\n${modListWithTarget}\n\n📋 **执行要求**：\n1. 每个三级模块必须强制达到各自目标数量，不足时继续拆分更细粒度的操作\n2. 每个模块必须：数据存储ILF + 完整CRUD(EI) + 多维度查询筛选(EQ) + 多维度统计(EO)\n3. 筛选维度（时间/状态/类型/区域/人员）每维度单独一行EQ\n4. 统计维度（日/月/季/年/地区/类型）每维度单独一行EO\n5. 状态变迁（启用/禁用/归档/恢复）每种变迁单独一行EI\n6. 如有枚举子类型，每个子类型的CRUD操作均需单独展开`;
-                console.log(`📌 注入数量规划脚手架: ${activeMods.length} 个模块（总目标:${totalTarget}）`);
-            } else {
-                // ── 普通模块脚手架注入 ──
-                const modList = activeMods.map(m => {
-                    const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
-                    const est = m.estimatedFunctionPoints ? `，预估约${m.estimatedFunctionPoints}个功能点` : '';
-                    return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs}${est}`;
-                }).join('\n');
-
-                if (extractionMode === 'quantity' && targetFpCount) {
-                    userPrompt += `\n\n## ⚠️ 数量优先·模块覆盖脚手架（总目标：至少 ${targetFpCount} 个功能点）\n${modList}\n\n以上每个三级模块必须极限展开，不得遗漏！`;
+                        const targetStr = target ? `【⚡ 目标：至少 ${target} 个功能点，必须强制展开！】` : '';
+                        return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs} ${targetStr}`;
+                    }).join('\n');
+                    const batchTotal = batchMods.reduce((s, m) => {
+                        const l3key = (m.level3 || '').trim();
+                        let t = planMap[l3key];
+                        if (!t) { for (const [k, v] of Object.entries(planMap)) { if (l3key.includes(k) || k.includes(l3key)) { t = v; break; } } }
+                        return s + (t || 10);
+                    }, 0);
+                    prompt += `\n\n## ⚠️ 数量优先·本批次模块（批次${batchIndex + 1}/${totalBatches}，本批目标约${batchTotal}个功能点）\n\n仅需提取以下${batchMods.length}个三级模块的功能点：\n\n${modListWithTarget}\n\n📋 执行要求：\n1. 每个三级模块强制达到目标数量\n2. 每个模块：ILF + CRUD(EI) + 多维EQ + 多维EO\n3. 筛选维度（时间/状态/类型/区域）每维度单独一行EQ\n4. 统计维度（日/月/季/年/地区）每维度单独一行EO\n5. 状态变迁每种单独一行EI\n6. 枚举子类型CRUD各自展开`;
+                } else if (extractionMode === 'quantity' && targetFpCount) {
+                    const modList = batchMods.map(m => {
+                        const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
+                        return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs}`;
+                    }).join('\n');
+                    prompt += `\n\n## ⚠️ 数量优先·本批次模块脚手架（批次${batchIndex + 1}/${totalBatches}）\n${modList}\n\n以上每个三级模块必须极限展开，不得遗漏！`;
                 } else {
-                    userPrompt += `\n\n## ⚠️ 模块覆盖脚手架（必须逐一覆盖以下每个三级模块！）\n${modList}\n\n以上每个三级模块都必须至少识别出 1个ILF/EIF + CRUD相关EI + 查询相关EQ + 统计相关EO。不得遗漏任何三级模块！`;
+                    const modList = batchMods.map(m => {
+                        const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
+                        const est = m.estimatedFunctionPoints ? `，预估约${m.estimatedFunctionPoints}个功能点` : '';
+                        return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs}${est}`;
+                    }).join('\n');
+                    prompt += `\n\n## ⚠️ 模块覆盖脚手架（批次${batchIndex + 1}/${totalBatches}，仅处理以下${batchMods.length}个模块）\n${modList}\n\n每个三级模块须有 ILF/EIF + CRUD(EI) + 查询(EQ) + 统计(EO)。`;
                 }
-                console.log(`📌 注入模块脚手架: ${activeMods.length} 个三级模块`);
             }
+
+            // ⚠️ 多批次模式下不向 AI 注入已累积列表！
+            // 每批已按模块限定范围，AI 不会越界重复；大量"已提取"列表会挤占 token 导致产出减少。
+            // 批次间去重由代码层的 existingNames Set 完成。
+            // 仅首批注入 previousResults（跨轮补充场景），且最多传 50 条防止撑爆。
+            if (batchIndex === 0 && previousResults.length > 0) {
+                const prevNames = previousResults.map(r => r.funcName).filter(Boolean);
+                const sample = prevNames.slice(0, 50);
+                prompt += `\n\n## 上一轮已有记录（请勿重复，共${prevNames.length}条）：\n${sample.map((n, i) => `${i + 1}. ${n}`).join('\n')}${prevNames.length > 50 ? `\n...（剩余${prevNames.length - 50}条略）` : ''}`;
+            }
+
+            if (userGuidelines) {
+                prompt += `\n\n用户特殊要求：${userGuidelines}`;
+            }
+
+            const completion = await callAIWithRetry({
+                messages: [
+                    { role: 'system', content: activePrompt },
+                    { role: 'user', content: prompt }
+                ],
+                model: modelName,
+                temperature: 0.5,
+                max_tokens: 16000
+            });
+
+            if (!completion?.choices?.[0]?.message?.content) {
+                throw new Error(`批次 ${batchIndex + 1} AI返回了空响应`);
+            }
+            return completion.choices[0].message.content;
+        };
+
+        // ────────────────────────────────────────────────────────────────
+        // 主提取逻辑：模块数 ≤ BATCH_SIZE → 单次；否则自动分批
+        // ────────────────────────────────────────────────────────────────
+        let allTableData = [];
+        let allReplies = [];
+
+        if (activeMods.length === 0 || activeMods.length <= BATCH_SIZE) {
+            // 单批次
+            console.log(`📌 单批次提取: ${activeMods.length} 个模块`);
+            const reply = await extractOneBatch(activeMods, 0, 1, []);
+            allTableData = parseNesmaTable(reply);
+            allReplies.push(reply);
+        } else {
+            // 多批次自动分批
+            const totalBatches = Math.ceil(activeMods.length / BATCH_SIZE);
+            console.log(`🔀 模块数(${activeMods.length}) > 阈值(${BATCH_SIZE})，自动分为 ${totalBatches} 批...`);
+
+            for (let bi = 0; bi < totalBatches; bi++) {
+                const batchMods = activeMods.slice(bi * BATCH_SIZE, (bi + 1) * BATCH_SIZE);
+                console.log(`  📦 批次 ${bi + 1}/${totalBatches}: [${batchMods.map(m => m.level3 || m.level2).join('] [')}]`);
+                try {
+                    const reply = await extractOneBatch(batchMods, bi, totalBatches, allTableData);
+                    const batchData = parseNesmaTable(reply);
+                    const existingNames = new Set(allTableData.map(r => (r.funcName || '').toLowerCase().trim()));
+                    const newRows = batchData.filter(r => !existingNames.has((r.funcName || '').toLowerCase().trim()));
+                    allTableData = [...allTableData, ...newRows];
+                    allReplies.push(reply);
+                    console.log(`  ✅ 批次 ${bi + 1} 完成: +${newRows.length} 个（累计 ${allTableData.length} 个）`);
+                } catch (batchErr) {
+                    console.error(`  ❌ 批次 ${bi + 1} 失败: ${batchErr.message}，跳过继续...`);
+                }
+                // 批次间间隔 1.5 秒，避免限流
+                if (bi < totalBatches - 1) await new Promise(r => setTimeout(r, 1500));
+            }
+            // 重新编号
+            allTableData.forEach((r, i) => { r.id = String(i + 1); });
         }
 
-        if (previousResults.length > 0) {
-            const existingNames = previousResults.map(r => r.funcName).filter(Boolean);
-            userPrompt += `\n\n## 已提取的功能点（请勿重复）：\n${existingNames.map((n, i) => `${i + 1}. ${n}`).join('\n')}`;
-        }
-
-        if (userGuidelines) {
-            userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
-        }
-
-        const completion = await callAIWithRetry({
-            messages: [
-                { role: 'system', content: activePrompt },
-                { role: 'user', content: userPrompt }
-            ],
-            model: modelName,
-            temperature: 0.5,
-            max_tokens: 16000
-        });
-
-        if (!completion?.choices?.[0]?.message?.content) {
-            return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
-        }
-        const reply = completion.choices[0].message.content;
-        const tableData = parseNesmaTable(reply);
-
-        console.log(`✅ NESMA功能点提取完成，解析到 ${tableData.length} 个功能点`);
+        console.log(`✅ NESMA功能点提取完成，共解析到 ${allTableData.length} 个功能点（共 ${allReplies.length} 批次）`);
         res.json({
             success: true,
-            reply,
-            tableData,
-            count: tableData.length
+            reply: allReplies.join('\n\n---批次分隔---\n\n'),
+            tableData: allTableData,
+            count: allTableData.length,
+            batches: allReplies.length
         });
     } catch (error) {
         console.error('NESMA功能点提取失败:', error);

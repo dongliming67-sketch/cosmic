@@ -8,6 +8,8 @@ const OpenAI = require('openai');
 const MODEL_MAP = {
     'deepseek-v3': 'deepseek-v3',
     'deepseek-v3.2': 'deepseek-v3.2',
+    'deepseek-r1': 'deepseek-r1',              // 深度思考模式
+    'deepseek-reasoner': 'deepseek-r1',         // 别名
     'qwen3-coder': 'qwen3-coder-plus',
     'qwen3-coder-plus': 'qwen3-coder-plus',
     'gpt-5.1-codex-mini': 'gpt-5.1-codex-mini',
@@ -19,8 +21,8 @@ const MODEL_MAP = {
 // GPT平台模型列表（使用不同的API密钥和基础URL）
 const GPT_MODELS = new Set(['gpt-5.1-codex-mini']);
 
-// GPT模型必须使用流式调用
-const STREAM_ONLY_MODELS = new Set(['gpt-5.1-codex-mini']);
+// 必须使用流式调用的模型（R1 思考链很长，流式更稳定；GPT平台也需要流式）
+const STREAM_ONLY_MODELS = new Set(['gpt-5.1-codex-mini', 'deepseek-r1']);
 
 /**
  * 获取 OpenAI 兼容客户端（指向心流平台）
@@ -91,9 +93,19 @@ async function callAI(options) {
         });
 
         let fullContent = '';
+        let thinkingContent = '';
+        const isR1 = modelName === 'deepseek-r1';
         for await (const chunk of completion) {
-            const content = chunk.choices[0]?.delta?.content || '';
+            const delta = chunk.choices[0]?.delta;
+            // R1 模型：reasoning_content 是思考链，content 是最终答案
+            if (isR1 && delta?.reasoning_content) {
+                thinkingContent += delta.reasoning_content;
+            }
+            const content = delta?.content || '';
             fullContent += content;
+        }
+        if (isR1 && thinkingContent) {
+            console.log(`   🧠 DeepSeek-R1 思考链长度: ${thinkingContent.length} 字符`);
         }
 
         // 构造一个兼容非流式格式的响应对象
@@ -146,9 +158,12 @@ async function callAIWithRetry(options, maxRetries = 4) {
             const status = error.status || error.response?.status;
             const isRetryable = status === 429 || status === 500 || status === 502 || status === 503
                 || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED'
+                || error.code === 'ERR_STREAM_PREMATURE_CLOSE' || error.code === 'ECONNREFUSED'
                 || error.message?.includes('timeout') || error.message?.includes('429')
                 || error.message?.includes('Unexpected end of JSON') || error.message?.includes('invalid json response body')
-                || error.message?.includes('unexpected end of file');
+                || error.message?.includes('unexpected end of file')
+                || error.message?.includes('Premature close') || error.message?.includes('premature close')
+                || error.message?.includes('PREMATURE_CLOSE') || error.message?.includes('Invalid response body');
 
             console.warn(`   ⚠️ AI调用失败 (尝试 ${attempt + 1}/${maxRetries}): [${status || error.code || '?'}] ${error.message?.substring(0, 200)}`);
 
