@@ -57,6 +57,9 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
     const [showEditModal, setShowEditModal] = useState(false);
     const [moduleStructure, setModuleStructure] = useState(null); // NESMA三级模块结构
     const [extractionMode, setExtractionMode] = useState('precise'); // 'precise' | 'quantity'
+    const [totalTargetCount, setTotalTargetCount] = useState(300); // 数量优先：目标总功能点数
+    const [quantityPlan, setQuantityPlan] = useState(null); // 每模块目标数量规划 [{level1,level2,level3,target,...}]
+    const [showQuantityPlan, setShowQuantityPlan] = useState(false); // 数量规划弹窗
 
     // 章节模式
     const [chapters, setChapters] = useState([]);
@@ -156,15 +159,45 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                 recognizedModules = modRes.data.moduleData;
                 setModuleStructure(recognizedModules);
 
+                // ── 如果是数量优先模式，自动生成数量规划 ──
+                let generatedPlan = null;
+                const currentMode = extractionMode; // capture current mode
+                if (currentMode === 'quantity') {
+                    const mods = recognizedModules.modules;
+                    const totalEst = mods.reduce((s, m) => s + (m.estimatedFunctionPoints || 15), 0) || 1;
+                    // 按预估占比分配目标数量，最小8，最大999
+                    const plan = mods.map(m => ({
+                        level1: m.level1,
+                        level2: m.level2,
+                        level3: m.level3,
+                        businessObjects: m.businessObjects || [],
+                        estimated: m.estimatedFunctionPoints || 15,
+                        target: Math.max(8, Math.round((m.estimatedFunctionPoints || 15) / totalEst * totalTargetCount))
+                    }));
+                    // 修正合计误差，加到最大模块上
+                    const planTotal = plan.reduce((s, p) => s + p.target, 0);
+                    if (plan.length > 0) {
+                        const maxIdx = plan.reduce((mi, p, i) => p.target > plan[mi].target ? i : mi, 0);
+                        plan[maxIdx].target += totalTargetCount - planTotal;
+                        if (plan[maxIdx].target < 8) plan[maxIdx].target = 8;
+                    }
+                    generatedPlan = plan;
+                    setQuantityPlan(plan);
+                }
+
                 const modSummary = recognizedModules.modules.map((m, i) =>
                     `${i + 1}. **${m.level3}**（${m.level1} > ${m.level2}）: ${
                         m.businessObjects?.join('、') || '若干业务对象'
-                    }，预估 ~${m.estimatedFunctionPoints || '?'} 个功能点`
+                    }${generatedPlan ? `，目标 **${generatedPlan[i]?.target || '?'}** 个功能点` : `，预估 ~${m.estimatedFunctionPoints || '?'} 个功能点`}`
                 ).join('\n');
+
+                const planTip = generatedPlan
+                    ? `\n\n📊 **已生成数量规划**（总目标 ${totalTargetCount} 个）。可点击「**调整规划**」按钮修改各模块目标数量。`
+                    : '';
 
                 setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `## 🗂️ 三级模块结构识别完成\n\n共识别到 **${recognizedModules.modules.length}** 个三级模块节点，预估总功能点 **~${recognizedModules.totalEstimated || '?'}**：\n\n${modSummary}\n\n这些模块将作为"脚手架"指导功能点提取，确保不遗漏任何三级模块。`
+                    content: `## 🗂️ 三级模块结构识别完成\n\n共识别到 **${recognizedModules.modules.length}** 个三级模块节点：\n\n${modSummary}${planTip}\n\n这些模块将作为"脚手架"指导功能点提取，确保不遗漏任何三级模块。`
                 }]);
             }
         } catch (e) {
@@ -254,7 +287,9 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                     userGuidelines,
                     previousResults: allTableData,
                     moduleStructure: activeModuleStructure,
-                    extractionMode, // 传入提取模式
+                    extractionMode,
+                    targetFpCount: extractionMode === 'quantity' ? totalTargetCount : null,
+                    quantityPlan: extractionMode === 'quantity' ? quantityPlan : null, // 模块级别目标数量规划
                     userConfig: getUserConfig()
                 }, { signal });
 
@@ -540,6 +575,7 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
         setChapters([]);
         setCoverageResult(null);
         setModuleStructure(null);
+        setQuantityPlan(null);
     };
 
     const stopAnalysis = () => {
@@ -805,9 +841,32 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                                 <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>提取模式：</span>
                                 <button onClick={() => setExtractionMode('precise')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'precise' ? 'var(--nesma-accent)' : 'var(--bg-tertiary)', color: extractionMode === 'precise' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'precise' ? 600 : 400, transition: 'all 0.15s' }}>🎯 精准模式</button>
                                 <button onClick={() => setExtractionMode('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s' }}>📊 数量优先</button>
-                                <span style={{ fontSize: 11, color: extractionMode === 'quantity' ? '#f59e0b' : 'var(--text-muted)' }}>
-                                    {extractionMode === 'precise' ? '严格按文档内容提取，分类精准' : '⚡ 对每个业务对象强制展开增删改查全套，数量最大化'}
-                                </span>
+                                {extractionMode === 'quantity' && (
+                                    <>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '3px 8px' }}>
+                                            <span style={{ fontSize: 11, color: '#f59e0b', whiteSpace: 'nowrap' }}>目标总数：</span>
+                                            <input
+                                                type="number" min={50} max={9999} step={50}
+                                                value={totalTargetCount}
+                                                onChange={e => setTotalTargetCount(Math.max(50, Math.min(9999, parseInt(e.target.value) || 300)))}
+                                                style={{ width: 70, padding: '1px 4px', fontSize: 13, border: '1px solid rgba(245,158,11,0.4)', borderRadius: 4, background: 'transparent', color: '#d97706', fontWeight: 700, textAlign: 'center', outline: 'none' }}
+                                            />
+                                            <span style={{ fontSize: 11, color: '#f59e0b' }}>个</span>
+                                        </div>
+                                        {quantityPlan && (
+                                            <button
+                                                onClick={() => setShowQuantityPlan(true)}
+                                                style={{ padding: '3px 10px', borderRadius: 8, fontSize: 11, border: '1px solid rgba(245,158,11,0.5)', cursor: 'pointer', background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontWeight: 600, transition: 'all 0.15s', whiteSpace: 'nowrap' }}
+                                            >
+                                                📋 调整规划（{quantityPlan.length}个模块）
+                                            </button>
+                                        )}
+                                        <span style={{ fontSize: 11, color: '#f59e0b' }}>⚡ 系统将按模块比例分配目标，全面展开CRUD</span>
+                                    </>
+                                )}
+                                {extractionMode === 'precise' && (
+                                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>严格按文档内容提取，分类精准</span>
+                                )}
                             </div>
                             <div className="input-actions-left">
                                 {currentStep === 0 && (
@@ -1109,6 +1168,131 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                                 <button className="btn btn-secondary" onClick={() => setShowEditModal(false)}>关闭</button>
                                 <button className="btn btn-primary nesma-btn" onClick={() => { setShowEditModal(false); showToast('功能点数据已更新'); }}>
                                     <Save size={14} /> 保存修改
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ═══ 数量规划弹窗 ═══ */}
+            {showQuantityPlan && quantityPlan && (
+                <div className="table-view-overlay" onClick={() => setShowQuantityPlan(false)}>
+                    <div className="table-view-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 760 }}>
+                        <div className="table-view-header">
+                            <h2>📊 数量优先·模块规划</h2>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                    共 {quantityPlan.length} 个三级模块 · 目标合计&nbsp;
+                                    <strong style={{ color: '#f59e0b' }}>{quantityPlan.reduce((s, p) => s + p.target, 0)}</strong> 个功能点
+                                </span>
+                                <button className="btn btn-ghost btn-icon" onClick={() => setShowQuantityPlan(false)}>
+                                    <X size={18} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 总量重新分配工具栏 */}
+                        <div style={{ padding: '10px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: 'rgba(245,158,11,0.04)' }}>
+                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>重新按总目标数平均分配：</span>
+                            <input
+                                type="number" min={50} max={3000} step={50}
+                                value={totalTargetCount}
+                                onChange={e => setTotalTargetCount(Math.max(50, parseInt(e.target.value) || 300))}
+                                style={{ width: 80, padding: '3px 6px', fontSize: 13, border: '1px solid var(--border-subtle)', borderRadius: 6, background: 'var(--bg-secondary)', color: 'var(--text-primary)', textAlign: 'center' }}
+                            />
+                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>个</span>
+                            <button
+                                onClick={() => {
+                                    const mods = quantityPlan;
+                                    const totalEst = mods.reduce((s, m) => s + (m.estimated || 15), 0) || 1;
+                                    const plan = mods.map(m => ({
+                                        ...m,
+                                        target: Math.max(8, Math.round((m.estimated || 15) / totalEst * totalTargetCount))
+                                    }));
+                                    const planSum = plan.reduce((s, p) => s + p.target, 0);
+                                    if (plan.length > 0) {
+                                        const maxIdx = plan.reduce((mi, p, i) => p.target > plan[mi].target ? i : mi, 0);
+                                        plan[maxIdx].target += totalTargetCount - planSum;
+                                        if (plan[maxIdx].target < 8) plan[maxIdx].target = 8;
+                                    }
+                                    setQuantityPlan(plan);
+                                }}
+                                style={{ padding: '4px 14px', borderRadius: 8, fontSize: 12, border: 'none', cursor: 'pointer', background: '#f59e0b', color: '#fff', fontWeight: 600 }}
+                            >
+                                🔄 按比例重新分配
+                            </button>
+                            <button
+                                onClick={() => {
+                                    const n = quantityPlan.length;
+                                    const base = Math.floor(totalTargetCount / n);
+                                    const rem = totalTargetCount - base * n;
+                                    setQuantityPlan(prev => prev.map((m, i) => ({ ...m, target: base + (i === 0 ? rem : 0) })));
+                                }}
+                                style={{ padding: '4px 14px', borderRadius: 8, fontSize: 12, border: '1px solid var(--border-subtle)', cursor: 'pointer', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', fontWeight: 500 }}
+                            >
+                                均分
+                            </button>
+                        </div>
+
+                        <div className="table-view-body" style={{ padding: '12px 20px' }}>
+                            {/* 表头 */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr 2fr 80px 80px', gap: 8, padding: '6px 8px', background: 'var(--bg-tertiary)', borderRadius: 6, marginBottom: 6, fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>
+                                <div>一级模块</div>
+                                <div>二级模块</div>
+                                <div>三级模块</div>
+                                <div>业务对象</div>
+                                <div style={{ textAlign: 'center' }}>预估</div>
+                                <div style={{ textAlign: 'center' }}>目标数量</div>
+                            </div>
+                            {quantityPlan.map((mod, idx) => (
+                                <div
+                                    key={idx}
+                                    style={{
+                                        display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr 2fr 80px 80px',
+                                        gap: 8, padding: '7px 8px', borderRadius: 6,
+                                        background: idx % 2 === 0 ? 'transparent' : 'rgba(0,0,0,0.02)',
+                                        border: '1px solid transparent',
+                                        transition: 'border-color 0.15s',
+                                        alignItems: 'center',
+                                        marginBottom: 2
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(245,158,11,0.2)'}
+                                    onMouseLeave={e => e.currentTarget.style.borderColor = 'transparent'}
+                                >
+                                    <div style={{ fontSize: 11, color: 'var(--nesma-accent)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={mod.level1}>{mod.level1}</div>
+                                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={mod.level2}>{mod.level2}</div>
+                                    <div style={{ fontSize: 11, color: '#6366f1', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={mod.level3}>{mod.level3}</div>
+                                    <div style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={(mod.businessObjects || []).join('、')}>{(mod.businessObjects || []).join('、') || '-'}</div>
+                                    <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--text-muted)' }}>~{mod.estimated || '?'}</div>
+                                    <div style={{ textAlign: 'center' }}>
+                                        <input
+                                            type="number" min={1} max={500}
+                                            value={mod.target}
+                                            onChange={e => {
+                                                const val = Math.max(1, parseInt(e.target.value) || 1);
+                                                setQuantityPlan(prev => prev.map((m, i) => i === idx ? { ...m, target: val } : m));
+                                            }}
+                                            style={{
+                                                width: 60, padding: '2px 4px', fontSize: 12,
+                                                border: '1px solid rgba(245,158,11,0.4)', borderRadius: 6,
+                                                background: 'rgba(245,158,11,0.08)', color: '#d97706',
+                                                fontWeight: 700, textAlign: 'center'
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                💡 目标数量越大，AI会对该模块展开更多功能点细节
+                            </span>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <button className="btn btn-secondary" onClick={() => setShowQuantityPlan(false)}>关闭</button>
+                                <button className="btn btn-primary nesma-btn" onClick={() => { setShowQuantityPlan(false); showToast('规划已保存，开始提取时将按此规划执行'); }}>
+                                    <Save size={14} /> 保存规划
                                 </button>
                             </div>
                         </div>

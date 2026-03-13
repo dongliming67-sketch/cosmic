@@ -589,6 +589,12 @@ app.post('/api/understand-document', async (req, res) => {
 
 /**
  * 自动识别文档章节结构
+ * 辨别标题 vs 正文的多层过滤：
+ *  1. 不同类型标题设不同最大长度（第X章60字, 数字编号30字, 中文序号35字）
+ *  2. 以句子标点结尾（。，；：！？…）的行必为正文，排除
+ *  3. 含正文特征词（应当/需要/如下/以下等）的行排除
+ *  4. 两候选标题之间内容少于30字 → 是列表项而非章节分割点
+ *  5. 章节数过多(>20) → 自动收敛到顶层标题
  */
 function splitIntoChapters(text) {
     if (!text) return [];
@@ -596,68 +602,102 @@ function splitIntoChapters(text) {
     const lines = text.split('\n');
     const chapters = [];
 
-    // 章节标题匹配模式（按优先级排列）
-    const headingPatterns = [
-        // "第X章" / "第X节"
-        /^第[一二三四五六七八九十百千\d]+[章节]\s*.+/,
-        // "1." / "2." / "1.1" (数字编号，行首，后面有文字)
-        /^\d+(\.\d+)*[\s\.、]\s*[^\d\s].{2,}/,
-        // "一、" / "二、" (中文序号)
-        /^[一二三四五六七八九十]+[、．\.]\s*.+/,
-        // "(一)" / "（一）"
-        /^[（(][一二三四五六七八九十\d]+[）)]\s*.+/,
+    // 各类标题模式 + 对应最大长度
+    const HEADING_RULES = [
+        { pattern: /^第[一二三四五六七八九十百千\d]+[章节篇]\s*.+/, maxLen: 60 },
+        { pattern: /^[（(][一二三四五六七八九十\d]+[）)]\s*.+/, maxLen: 40 },
+        { pattern: /^[一二三四五六七八九十]+[、．.]\s*.+/, maxLen: 35 },
+        { pattern: /^\d+(\.\d+)*[\.、\s]\s*[^\d\s].+/, maxLen: 30 },
     ];
+
+    // 以这些标点结尾 → 正文句子，不是标题
+    const BODY_ENDINGS = /[\u3002\uff0c\u3001\uff1b\uff1a\u2026\uff01\uff1f,;:!?)\uff09\u300b\u300f\u201d\u2019]$/;
+
+    // 正文特征词 → 包含则不是标题
+    const BODY_INDICATORS = /应当|应该|需要|具体为|如下[\uff1a:]|以下[\uff1a:]|包括[\uff1a:]|说明[\uff1a:]|要求[\uff1a:]|其中[\uff0c,]|通过.*实现|由于|由此|因此|则需|不得|不应|不能|禁止|本[章节]介绍|本[章节]描述/;
 
     // 判断是否为章节标题
     function isHeading(line) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.length < 3 || trimmed.length > 80) return false;
-        return headingPatterns.some(p => p.test(trimmed));
+        if (!trimmed || trimmed.length < 2) return false;
+        if (BODY_ENDINGS.test(trimmed)) return false;
+        if (BODY_INDICATORS.test(trimmed)) return false;
+        for (const { pattern, maxLen } of HEADING_RULES) {
+            if (trimmed.length <= maxLen && pattern.test(trimmed)) return true;
+        }
+        return false;
     }
 
-    // 第一遍：找到所有标题行的位置
-    const headingPositions = [];
+    // 第一遍：找所有候选标题行位置
+    const candidatePositions = [];
     for (let i = 0; i < lines.length; i++) {
-        if (isHeading(lines[i])) {
-            headingPositions.push(i);
+        if (isHeading(lines[i])) candidatePositions.push(i);
+    }
+
+    if (candidatePositions.length === 0) {
+        return [{ title: '全文', content: text, charCount: text.length, selected: true }];
+    }
+
+    // 第二遍：过滤「内容过短」的假标题（两标题间内容<30字 → 是列表项）
+    const MIN_CHAPTER_CONTENT = 30;
+    const headingPositions = [];
+
+    for (let i = 0; i < candidatePositions.length; i++) {
+        const curPos = candidatePositions[i];
+        const nextPos = (i < candidatePositions.length - 1)
+            ? candidatePositions[i + 1]
+            : lines.length;
+        const contentBetween = lines.slice(curPos + 1, nextPos)
+            .join('').replace(/\s/g, '').length;
+        if (contentBetween >= MIN_CHAPTER_CONTENT) {
+            headingPositions.push(curPos);
         }
     }
 
     if (headingPositions.length === 0) {
-        // 没找到章节，整个文档作为一个章节
-        return [{
-            title: '全文',
-            content: text,
-            charCount: text.length,
-            selected: true
-        }];
+        return [{ title: '全文', content: text, charCount: text.length, selected: true }];
     }
 
-    // 文档开头到第一个标题之间的内容（如果有的话）
-    if (headingPositions[0] > 0) {
-        const preContent = lines.slice(0, headingPositions[0]).join('\n').trim();
+    // 章节数过多时(>20)，只保留顶层标题
+    let finalPositions = headingPositions;
+    if (headingPositions.length > 20) {
+        const topLevel = headingPositions.filter(pos => {
+            const t = lines[pos].trim();
+            return /^第[一二三四五六七八九十百千\d]+[章节篇]/.test(t)
+                || /^[（(][一二三四五六七八九十\d]+[）)]/.test(t)
+                || /^[一二三四五六七八九十]+[、．.]/.test(t)
+                || /^\d+[.、\s]\s*[^\d\s]/.test(t);
+        });
+        if (topLevel.length >= 2 && topLevel.length <= 20) {
+            finalPositions = topLevel;
+            console.log(`📑 章节过多(${headingPositions.length})，已收敛到 ${finalPositions.length} 个顶层章节`);
+        }
+    }
+
+    // 文档开头到第一个标题之间的内容
+    if (finalPositions[0] > 0) {
+        const preContent = lines.slice(0, finalPositions[0]).join('\n').trim();
         if (preContent.length > 50) {
             chapters.push({
                 title: '前言/概述',
                 content: preContent,
                 charCount: preContent.length,
-                selected: false // 前言通常不含功能描述
+                selected: false
             });
         }
     }
 
-    // 按标题分章
-    for (let i = 0; i < headingPositions.length; i++) {
-        const startLine = headingPositions[i];
-        const endLine = (i < headingPositions.length - 1) ? headingPositions[i + 1] : lines.length;
+    // 按最终标题位置分章
+    for (let i = 0; i < finalPositions.length; i++) {
+        const startLine = finalPositions[i];
+        const endLine = (i < finalPositions.length - 1) ? finalPositions[i + 1] : lines.length;
         const title = lines[startLine].trim();
         const content = lines.slice(startLine, endLine).join('\n').trim();
-
         chapters.push({
             title,
             content,
             charCount: content.length,
-            selected: content.length > 50  // 降低阈值避免跳过精简但重要的章节
+            selected: content.length > 50
         });
     }
 
@@ -1687,7 +1727,14 @@ function parseNesmaTable(markdown) {
 
 app.post('/api/nesma/extract-functions', async (req, res) => {
     try {
-        const { documentContent, chapterContent = '', chapterName = '', userGuidelines = '', previousResults = [], moduleStructure = null, extractionMode = 'precise', userConfig = null } = req.body;
+        const {
+            documentContent, chapterContent = '', chapterName = '', userGuidelines = '',
+            previousResults = [], moduleStructure = null,
+            extractionMode = 'precise',
+            targetFpCount = null,   // 数量优先：总目标功能点数
+            quantityPlan = null,    // 数量优先：每个三级模块的目标数量 [{level1,level2,level3,target}]
+            userConfig = null
+        } = req.body;
         const content = chapterContent || documentContent;
         if (!content) {
             return res.status(400).json({ error: '缺少文档内容' });
@@ -1716,15 +1763,50 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                   )
                 : moduleStructure.modules;
 
-            const modList = (relevantModules.length > 0 ? relevantModules : moduleStructure.modules)
-                .map(m => {
+            const activeMods = relevantModules.length > 0 ? relevantModules : moduleStructure.modules;
+
+            if (extractionMode === 'quantity' && quantityPlan && quantityPlan.length > 0) {
+                // ── 数量优先模式 + 规划：按模块注入精确目标数量 ──
+                // 建立 level3 → target 的映射
+                const planMap = {};
+                quantityPlan.forEach(p => {
+                    const key = (p.level3 || '').trim();
+                    if (key) planMap[key] = p.target;
+                });
+
+                const modListWithTarget = activeMods.map(m => {
+                    const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
+                    const l3key = (m.level3 || '').trim();
+                    // 匹配规划中的目标数量（模糊匹配：完整匹配 or 包含关系）
+                    let target = planMap[l3key];
+                    if (!target) {
+                        // 尝试模糊匹配
+                        for (const [key, val] of Object.entries(planMap)) {
+                            if (l3key.includes(key) || key.includes(l3key)) { target = val; break; }
+                        }
+                    }
+                    const targetStr = target ? `【⚡ 目标：至少 ${target} 个功能点，必须强制展开到足够数量！】` : '';
+                    return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs} ${targetStr}`;
+                }).join('\n');
+
+                const totalTarget = quantityPlan.reduce((s, p) => s + (p.target || 0), 0) || targetFpCount || 300;
+                userPrompt += `\n\n## ⚠️ 数量优先·模块覆盖清单（每个模块必须达到目标数量！）\n\n**全局目标：本文档总计至少提取 ${totalTarget} 个功能点，每个三级模块必须严格达到括号内的目标数量。**\n\n${modListWithTarget}\n\n📋 **执行要求**：\n1. 每个三级模块必须强制达到各自目标数量，不足时继续拆分更细粒度的操作\n2. 每个模块必须：数据存储ILF + 完整CRUD(EI) + 多维度查询筛选(EQ) + 多维度统计(EO)\n3. 筛选维度（时间/状态/类型/区域/人员）每维度单独一行EQ\n4. 统计维度（日/月/季/年/地区/类型）每维度单独一行EO\n5. 状态变迁（启用/禁用/归档/恢复）每种变迁单独一行EI\n6. 如有枚举子类型，每个子类型的CRUD操作均需单独展开`;
+                console.log(`📌 注入数量规划脚手架: ${activeMods.length} 个模块（总目标:${totalTarget}）`);
+            } else {
+                // ── 普通模块脚手架注入 ──
+                const modList = activeMods.map(m => {
                     const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
                     const est = m.estimatedFunctionPoints ? `，预估约${m.estimatedFunctionPoints}个功能点` : '';
                     return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs}${est}`;
                 }).join('\n');
 
-            userPrompt += `\n\n## ⚠️ 模块覆盖脚手架（必须逐一覆盖以下每个三级模块！）\n${modList}\n\n以上每个三级模块都必须至少识别出 1个ILF/EIF + CRUD相关EI + 查询相关EQ + 统计相关EO。不得遗漏任何三级模块！`;
-            console.log(`📌 注入模块脚手架: ${(relevantModules.length > 0 ? relevantModules : moduleStructure.modules).length} 个三级模块`);
+                if (extractionMode === 'quantity' && targetFpCount) {
+                    userPrompt += `\n\n## ⚠️ 数量优先·模块覆盖脚手架（总目标：至少 ${targetFpCount} 个功能点）\n${modList}\n\n以上每个三级模块必须极限展开，不得遗漏！`;
+                } else {
+                    userPrompt += `\n\n## ⚠️ 模块覆盖脚手架（必须逐一覆盖以下每个三级模块！）\n${modList}\n\n以上每个三级模块都必须至少识别出 1个ILF/EIF + CRUD相关EI + 查询相关EQ + 统计相关EO。不得遗漏任何三级模块！`;
+                }
+                console.log(`📌 注入模块脚手架: ${activeMods.length} 个三级模块`);
+            }
         }
 
         if (previousResults.length > 0) {
