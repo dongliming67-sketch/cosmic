@@ -411,10 +411,64 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                 const newData = res.data.tableData.filter(r => !existingNames.has(r.funcName?.toLowerCase().trim()));
 
                 if (newData.length > 0) {
-                    // 重新编号
-                    const nextId = nesmaTableData.length + 1;
-                    newData.forEach((r, i) => { r.id = String(nextId + i); });
-                    const updatedData = [...nesmaTableData, ...newData];
+                    // ── 智能模块插入：将每个新功能点插入到对应模块的末尾 ──
+                    // 辅助函数：获取功能点的各级模块标识
+                    const getModuleKey = (r, level) => {
+                        const l1 = (r.level1 || r.funcModule || '').trim();
+                        const l2 = (r.level2 || r.subFunction || '').trim();
+                        const l3 = (r.level3 || '').trim();
+                        if (level === 3) return `${l1}|||${l2}|||${l3}`;
+                        if (level === 2) return `${l1}|||${l2}`;
+                        return l1;
+                    };
+
+                    // 对现有数据建立索引：每个模块key对应的最后一条记录的索引
+                    const buildLastIndexMap = (data) => {
+                        const map3 = {}, map2 = {}, map1 = {};
+                        data.forEach((r, idx) => {
+                            const k3 = getModuleKey(r, 3);
+                            const k2 = getModuleKey(r, 2);
+                            const k1 = getModuleKey(r, 1);
+                            if (k3) map3[k3] = idx;
+                            if (k2) map2[k2] = idx;
+                            if (k1) map1[k1] = idx;
+                        });
+                        return { map3, map2, map1 };
+                    };
+
+                    // 逐条插入新功能点到对应模块位置
+                    let mergedData = [...nesmaTableData];
+                    let insertedCount = 0;
+
+                    for (const newRow of newData) {
+                        // 重建索引（因为每次插入后位置会变化）
+                        const { map3, map2, map1 } = buildLastIndexMap(mergedData);
+                        const k3 = getModuleKey(newRow, 3);
+                        const k2 = getModuleKey(newRow, 2);
+                        const k1 = getModuleKey(newRow, 1);
+
+                        // 按三级 → 二级 → 一级 → 末尾 优先顺序查找插入点
+                        let insertAfterIdx = -1;
+                        if (k3 && map3[k3] !== undefined) {
+                            insertAfterIdx = map3[k3];
+                        } else if (k2 && map2[k2] !== undefined) {
+                            insertAfterIdx = map2[k2];
+                        } else if (k1 && map1[k1] !== undefined) {
+                            insertAfterIdx = map1[k1];
+                        }
+
+                        const rowWithId = { ...newRow, id: String(mergedData.length + 1) };
+                        if (insertAfterIdx >= 0) {
+                            mergedData.splice(insertAfterIdx + 1, 0, rowWithId);
+                        } else {
+                            mergedData.push(rowWithId);
+                        }
+                        insertedCount++;
+                    }
+
+                    // 重新整理id顺序
+                    mergedData.forEach((r, i) => { r.id = String(i + 1); });
+                    const updatedData = mergedData;
                     setNesmaTableData(updatedData);
                     const totalFP = updatedData.reduce((sum, r) => sum + (r.fpCount || 0), 0);
 
