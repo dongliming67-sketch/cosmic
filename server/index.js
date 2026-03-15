@@ -1856,6 +1856,13 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                     }).join('\n');
                     const perModTarget = Math.round(targetFpCount / (activeMods.length || 1));
                     prompt += `\n\n## 📊 按计划数量拆分·本批次模块（批次${batchIndex + 1}/${totalBatches}，每模块目标约 ${perModTarget} 个）\n${modList}\n\n以上每个三级模块请按约 ${perModTarget} 个功能点展开，不要过多也不要过少。`;
+                } else if (extractionMode === 'guochanhua') {
+                    // 国产化迁移模式：为每个模块注入7大迁移维度要求
+                    const modList = batchMods.map(m => {
+                        const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
+                        return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs}`;
+                    }).join('\n');
+                    prompt += `\n\n## 🏗️ 国产化迁移功能点提取·本批次模块（批次${batchIndex + 1}/${totalBatches}，仅处理以下${batchMods.length}个模块）\n\n${modList}\n\n## ⚡ 执行要求（必须严格遵守）：\n1. 先提取每个三级模块的**标准业务功能点**（ILF/EIF + CRUD(EI) + 查询(EQ) + 统计(EO)），「迁移维度」列填「原有业务」\n2. 然后为每个三级模块按以下7大维度**逐一判断并展开迁移功能点**（与模块业务对象相关的维度必须包含，每个适用维度至少3~6个功能点）：\n   - **维度1：采集数据迁移** — 该模块有数据采集/传感器/监控数据时必须展开\n   - **维度2：ETL迁移配置** — 该模块有数据清洗/转换/数据管道时必须展开\n   - **维度3：数据汇总迁移** — 该模块有统计汇总/聚合计算时必须展开\n   - **维度4：外部接口迁移** — 该模块有第三方接口/数据交换时必须展开\n   - **维度5：流程引擎迁移** — 该模块有审批流程/工单流转/BPM时必须展开\n   - **维度6：前端应用迁移** — 所有含前端页面的模块必须展开（国产化浏览器/OS适配）\n   - **维度7：报表引擎迁移** — 该模块有数据可视化/图表/报表输出时必须展开\n3. 迁移功能点名称必须结合文档中具体业务名称，禁止使用泛化名称（如"数据迁移"）\n4. 输出8列表格：一级模块 | 二级模块 | 三级模块 | 业务功能 | 功能点类型 | 迁移维度 | 功能需求描述 | 外部接口需求描述`;
                 } else {
                     const modList = batchMods.map(m => {
                         const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
@@ -1887,7 +1894,7 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                 ],
                 model: modelName,
                 temperature: 0.5,
-                max_tokens: extractionMode === 'quantity' ? 32000 : 16000
+                max_tokens: (extractionMode === 'quantity' || extractionMode === 'guochanhua') ? 32000 : 16000
             });
 
             if (!completion?.choices?.[0]?.message?.content) {
