@@ -14,7 +14,8 @@ require('dotenv').config(); // also try CWD
 
 const { callAI, callAIWithRetry, MODEL_MAP } = require('./ai-client');
 const { FUNCTION_EXTRACTION_PROMPT, COSMIC_SPLIT_PROMPT, DOCUMENT_UNDERSTANDING_PROMPT, COVERAGE_VERIFICATION_PROMPT, SUPPLEMENTARY_EXTRACTION_PROMPT } = require('./prompts');
-const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT } = require('./nesma-prompts');
+const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
+
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3001;
@@ -1573,8 +1574,8 @@ function parseNesmaTable(markdown) {
             headerFound = true;
             hasReuseColumn = trimmed.includes('重用程度');
 
-            // v3格式：包含"业务功能"或"功能需求描述"或"外部接口需求描述"
-            if (trimmed.includes('业务功能') || trimmed.includes('功能需求描述') || trimmed.includes('外部接口需求描述')) {
+            // v3格式（含"业务功能"或"功能需求描述"或"外部接口需求描述"，含/不含"迁移维度"）
+            if (trimmed.includes('业务功能') || trimmed.includes('功能需求描述') || trimmed.includes('外部接口需求描述') || trimmed.includes('迁移维度')) {
                 formatVersion = 3;
             }
             // v2格式：包含"功能模块"或"子功能"，不包含"编号"/"一级模块"
@@ -1596,7 +1597,8 @@ function parseNesmaTable(markdown) {
         const cells = trimmed.split('|').filter((_, i, arr) => i > 0 && i < arr.length - 1).map(c => c.trim());
 
         if (formatVersion === 3) {
-            // ═══ v3格式：一级模块 | 二级模块 | 三级模块 | 业务功能 | 功能点类型 | 功能需求描述 | 外部接口需求描述 ═══
+            // ═══ v3格式（7列）：一级模块 | 二级模块 | 三级模块 | 业务功能 | 功能点类型 | 功能需求描述 | 外部接口需求描述 ═══
+            // ═══ v3+格式（8列）：一级模块 | 二级模块 | 三级模块 | 业务功能 | 功能点类型 | 迁移维度 | 功能需求描述 | 外部接口需求描述 ═══
             if (cells.length < 5) continue;
 
             let l1 = cells[0] || '';
@@ -1604,8 +1606,21 @@ function parseNesmaTable(markdown) {
             let l3 = cells[2] || '';
             let funcName = cells[3] || '';
             let category = (cells[4] || '').toUpperCase().trim();
-            let funcDescription = cells[5] || '';
-            let interfaceDescription = cells[6] || '';
+            let migrationDimension = '';
+            let funcDescription = '';
+            let interfaceDescription = '';
+
+            // 根据列数判断是否包含「迁移维度」列
+            if (cells.length >= 8) {
+                // 8列格式（国产化迁移模式）
+                migrationDimension = cells[5] || '';
+                funcDescription = cells[6] || '';
+                interfaceDescription = cells[7] || '';
+            } else {
+                // 标准7列格式
+                funcDescription = cells[5] || '';
+                interfaceDescription = cells[6] || '';
+            }
 
             // 验证类别
             const validCategories = ['ILF', 'EIF', 'EI', 'EO', 'EQ'];
@@ -1640,6 +1655,7 @@ function parseNesmaTable(markdown) {
                 reuseLevel: reuseLevel,
                 afp: afp,
                 modType: '新增',
+                migrationDimension: sanitizeText(migrationDimension) || '',
                 funcDescription: sanitizeText(funcDescription) || '',
                 interfaceDescription: sanitizeText(interfaceDescription) || ''
             });
@@ -1762,15 +1778,22 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
         }
 
         const chapterInfo = chapterName ? `（${chapterName}）` : '';
-        const modeLabel = extractionMode === 'quantity' ? '「数量优先」' : '「精准」';
+        const modeLabel = extractionMode === 'quantity' ? '「数量优先」' : extractionMode === 'guochanhua' ? '「国产化迁移」' : '「精准」';
         console.log(`📋 开始NESMA功能点提取${chapterInfo}（${modeLabel}模式）...`);
         const modelName = getModelName(userConfig);
 
         // 根据模式选择提示词
-        const activePrompt = extractionMode === 'quantity' ? NESMA_QUANTITY_PRIORITY_PROMPT : NESMA_FUNCTION_EXTRACTION_PROMPT;
+        let activePrompt;
+        if (extractionMode === 'quantity') {
+            activePrompt = NESMA_QUANTITY_PRIORITY_PROMPT;
+        } else if (extractionMode === 'guochanhua') {
+            activePrompt = NESMA_GUOCHANHUA_MIGRATION_PROMPT;
+        } else {
+            activePrompt = NESMA_FUNCTION_EXTRACTION_PROMPT;
+        }
 
-        // ── 自动分批阈值：数量优先每批2个模块（约20-30行输出，极稳定），精准模式≤10个模块 ──
-        const BATCH_SIZE = extractionMode === 'quantity' ? 2 : 10;
+        // ── 自动分批阈值：数量优先/国产化每批2个模块，精准模式≤10个模块 ──
+        const BATCH_SIZE = (extractionMode === 'quantity' || extractionMode === 'guochanhua') ? 2 : 10;
 
         // ── 确定活跃模块列表 ──
         let activeMods = [];
@@ -2087,33 +2110,67 @@ app.post('/api/nesma/export-excel', async (req, res) => {
         sr2.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
         sr2.getCell(2).font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
 
-        // 表头行 — v3格式：一级模块|二级模块|三级模块|业务功能|功能点类型|功能需求描述|外部接口需求描述|UFP|重用程度|修改类型|AFP
-        const headers = ['一级模块', '二级模块', '三级模块', '业务功能', '功能点类型', '功能需求描述', '外部接口需求描述', 'UFP', '重用程度', '修改类型', 'AFP'];
+        // 表头行 — 检测是否有国产化迁移数据，动态调整列数
+        const hasMigrationData = tableData.some(r => r.migrationDimension && r.migrationDimension !== '' && r.migrationDimension !== '原有业务');
+        const headers = hasMigrationData
+            ? ['一级模块', '二级模块', '三级模块', '业务功能', '功能点类型', '迁移维度', '功能需求描述', '外部接口需求描述', 'UFP', '重用程度', '修改类型', 'AFP']
+            : ['一级模块', '二级模块', '三级模块', '业务功能', '功能点类型', '功能需求描述', '外部接口需求描述', 'UFP', '重用程度', '修改类型', 'AFP'];
         const headerRow = worksheet.addRow(headers);
         const headerRowNum = worksheet.lastRow.number;
 
-        headerRow.eachCell((cell) => {
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D4F8B' } };
+        headerRow.eachCell((cell, colNumber) => {
+            // 迁移维度列用绿色表头
+            const isMigCol = hasMigrationData && colNumber === 6;
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isMigCol ? 'FF10B981' : 'FF0D4F8B' } };
             cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
             cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
             cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
         });
 
-        worksheet.columns = [
-            { width: 20 }, // 一级模块
-            { width: 22 }, // 二级模块
-            { width: 22 }, // 三级模块
-            { width: 32 }, // 业务功能
-            { width: 10 }, // 功能点类型
-            { width: 40 }, // 功能需求描述
-            { width: 36 }, // 外部接口需求描述
-            { width: 8 },  // UFP
-            { width: 10 }, // 重用程度
-            { width: 10 }, // 修改类型
-            { width: 10 }, // AFP
-        ];
+        if (hasMigrationData) {
+            worksheet.columns = [
+                { width: 18 }, // 一级模块
+                { width: 20 }, // 二级模块
+                { width: 20 }, // 三级模块
+                { width: 30 }, // 业务功能
+                { width: 10 }, // 功能点类型
+                { width: 14 }, // 迁移维度
+                { width: 38 }, // 功能需求描述
+                { width: 32 }, // 外部接口需求描述
+                { width: 8 },  // UFP
+                { width: 10 }, // 重用程度
+                { width: 10 }, // 修改类型
+                { width: 10 }, // AFP
+            ];
+        } else {
+            worksheet.columns = [
+                { width: 20 }, // 一级模块
+                { width: 22 }, // 二级模块
+                { width: 22 }, // 三级模块
+                { width: 32 }, // 业务功能
+                { width: 10 }, // 功能点类型
+                { width: 40 }, // 功能需求描述
+                { width: 36 }, // 外部接口需求描述
+                { width: 8 },  // UFP
+                { width: 10 }, // 重用程度
+                { width: 10 }, // 修改类型
+                { width: 10 }, // AFP
+            ];
+        }
+
+        // 迁移维度颜色（Excel背景色）
+        const migDimBgColors = {
+            '采集数据迁移': 'FFE0F2FE',
+            'ETL迁移配置': 'FFF3E8FF',
+            '数据汇总迁移': 'FFFFF7E0',
+            '外部接口迁移': 'FFFEE2E2',
+            '流程引擎迁移': 'FFFCE7F3',
+            '前端应用迁移': 'FFE6FFFA',
+            '报表引擎迁移': 'FFFFF3E0',
+        };
 
         // 填充数据 — 各级模块只在每组第一行显示，后续行留空
+
         let prevL1 = '';
         let prevL2 = '';
         let prevL3 = '';
@@ -2134,11 +2191,12 @@ app.post('/api/nesma/export-excel', async (req, res) => {
             const coeff = reuseCoeff[rl] || 1.0;
             const afpVal = Math.round((row.fpCount || 0) * coeff * 1000) / 1000;
 
-            const dataRow = worksheet.addRow([
-                showL1, showL2, showL3, row.funcName, row.category,
-                row.funcDescription || '', row.interfaceDescription || '',
-                row.fpCount || 0, rl, row.modType || '新增', afpVal
-            ]);
+            const migDim = row.migrationDimension || '';
+            const isMigRow = hasMigrationData && migDim && migDim !== '原有业务' && migDim !== '';
+            const dataRow = hasMigrationData
+                ? worksheet.addRow([showL1, showL2, showL3, row.funcName, row.category, migDim || '原有业务', row.funcDescription || '', row.interfaceDescription || '', row.fpCount || 0, rl, row.modType || '新增', afpVal])
+                : worksheet.addRow([showL1, showL2, showL3, row.funcName, row.category, row.funcDescription || '', row.interfaceDescription || '', row.fpCount || 0, rl, row.modType || '新增', afpVal]);
+
             dataRow.eachCell((cell, colNumber) => {
                 cell.alignment = { vertical: 'middle', wrapText: true };
                 cell.border = {
@@ -2147,16 +2205,28 @@ app.post('/api/nesma/export-excel', async (req, res) => {
                     left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
                     right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
                 };
-                // 类别列颜色
-                if (colNumber === 5) {
+                // 类别列颜色（国产化模式下类别在第5列）
+                const catCol = 5;
+                if (colNumber === catCol) {
                     cell.font = { bold: true, color: { argb: categoryColors[row.category] || 'FF000000' } };
                     cell.alignment = { horizontal: 'center', vertical: 'middle' };
                 }
-                // 居中列
-                if ([5, 8, 9, 10, 11].includes(colNumber)) {
+                // 迁移维度列背景色
+                if (hasMigrationData && colNumber === 6) {
+                    const bgColor = migDimBgColors[migDim] || 'FFF0FFF4';
+                    if (isMigRow) {
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+                        cell.font = { bold: true, color: { argb: 'FF10B981' }, size: 10 };
+                        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+                    }
+                }
+                // 居中列（随有无迁移列调整）
+                const centerCols = hasMigrationData ? [5, 6, 9, 10, 11, 12] : [5, 8, 9, 10, 11];
+                if (centerCols.includes(colNumber)) {
                     cell.alignment = { horizontal: 'center', vertical: 'middle' };
                 }
-                if (colNumber === 11) cell.numFmt = '#,##0.000';
+                const afpColNum = hasMigrationData ? 12 : 11;
+                if (colNumber === afpColNum) cell.numFmt = '#,##0.000';
             });
         });
 
@@ -2165,13 +2235,20 @@ app.post('/api/nesma/export-excel', async (req, res) => {
         const catCounts = {};
         tableData.forEach(r => { catCounts[r.category] = (catCounts[r.category] || 0) + 1; });
         const catSummary = `ILF:${catCounts['ILF'] || 0} EIF:${catCounts['EIF'] || 0} EI:${catCounts['EI'] || 0} EO:${catCounts['EO'] || 0} EQ:${catCounts['EQ'] || 0}`;
-        const footerRow = worksheet.addRow(['', '', '', `总计: ${tableData.length}个功能点 | ${catSummary}`, '', '', '', totalUFP, '', '', roundedAFP]);
+        // 根据有无迁移列调整占位
+        const footerRow = hasMigrationData
+            ? worksheet.addRow(['', '', '', `总计: ${tableData.length}个功能点 | ${catSummary}`, '', '', '', '', totalUFP, '', '', roundedAFP])
+            : worksheet.addRow(['', '', '', `总计: ${tableData.length}个功能点 | ${catSummary}`, '', '', '', totalUFP, '', '', roundedAFP]);
         footerRow.getCell(4).font = { bold: true, size: 11 };
-        footerRow.getCell(8).font = { bold: true, size: 12, color: { argb: 'FF0D4F8B' } };
-        footerRow.getCell(8).numFmt = '#,##0';
-        footerRow.getCell(11).font = { bold: true, size: 12, color: { argb: 'FF1E88E5' } };
-        footerRow.getCell(11).numFmt = '#,##0.00';
+        const ufpCol = hasMigrationData ? 9 : 8;
+        const afpFooterCol = hasMigrationData ? 12 : 11;
+        footerRow.getCell(ufpCol).font = { bold: true, size: 12, color: { argb: 'FF0D4F8B' } };
+        footerRow.getCell(ufpCol).numFmt = '#,##0';
+        footerRow.getCell(afpFooterCol).font = { bold: true, size: 12, color: { argb: 'FF1E88E5' } };
+        footerRow.getCell(afpFooterCol).numFmt = '#,##0.00';
         worksheet.views = [{ state: 'frozen', ySplit: headerRowNum }];
+
+
 
         // ═══════════ Sheet 2: 调整因子 ═══════════
         const ws2 = workbook.addWorksheet('调整因子');

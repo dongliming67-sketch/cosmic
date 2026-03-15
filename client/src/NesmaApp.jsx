@@ -841,6 +841,7 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                                 <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>提取模式：</span>
                                 <button onClick={() => setExtractionMode('precise')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'precise' ? 'var(--nesma-accent)' : 'var(--bg-tertiary)', color: extractionMode === 'precise' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'precise' ? 600 : 400, transition: 'all 0.15s' }}>🎯 精准模式</button>
                                 <button onClick={() => setExtractionMode('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s' }}>📊 数量优先</button>
+                                <button onClick={() => setExtractionMode('guochanhua')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'guochanhua' ? '#10b981' : 'var(--bg-tertiary)', color: extractionMode === 'guochanhua' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'guochanhua' ? 600 : 400, transition: 'all 0.15s' }}>🏗️ 国产化迁移</button>
                                 {extractionMode === 'quantity' && (
                                     <>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '3px 8px' }}>
@@ -867,7 +868,11 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                                 {extractionMode === 'precise' && (
                                     <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>严格按文档内容提取，分类精准</span>
                                 )}
+                                {extractionMode === 'guochanhua' && (
+                                    <span style={{ fontSize: 11, color: '#10b981' }}>🏗️ 标准NESMA功能点 + 7大国产化迁移维度（采集/ETL/汇总/接口/流程/前端/报表）</span>
+                                )}
                             </div>
+
                             <div className="input-actions-left">
                                 {currentStep === 0 && (
                                     <button
@@ -1016,17 +1021,21 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                                         <th style={{ width: '3%' }}>#</th>
                                         <th style={{ width: '10%' }}>一级模块</th>
                                         <th style={{ width: '10%' }}>二级模块</th>
-                                        <th style={{ width: '10%' }}>三级模块</th>
-                                        <th style={{ width: '14%' }}>业务功能</th>
+                                        <th style={{ width: '9%' }}>三级模块</th>
+                                        <th style={{ width: '13%' }}>业务功能</th>
                                         <th style={{ width: '5%' }}>类型</th>
-                                        <th style={{ width: '18%' }}>功能需求描述</th>
-                                        <th style={{ width: '14%' }}>外部接口需求描述</th>
+                                        {nesmaTableData.some(r => r.migrationDimension && r.migrationDimension !== '原有业务' && r.migrationDimension !== '') && (
+                                            <th style={{ width: '9%', color: '#10b981' }}>🏗️ 迁移维度</th>
+                                        )}
+                                        <th style={{ width: '16%' }}>功能需求描述</th>
+                                        <th style={{ width: '12%' }}>外部接口需求描述</th>
                                         <th style={{ width: '4%' }}>UFP</th>
                                         <th style={{ width: '4%' }}>AFP</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {nesmaTableData.map((row, idx) => {
+                                        const hasMigrationCol = nesmaTableData.some(r => r.migrationDimension && r.migrationDimension !== '原有业务' && r.migrationDimension !== '');
                                         const l1 = row.level1 || row.funcModule || '';
                                         const prevL1 = idx > 0 ? (nesmaTableData[idx-1].level1 || nesmaTableData[idx-1].funcModule || '') : '';
                                         const showL1 = (l1 && l1 !== '无' && l1 !== prevL1) ? l1 : '';
@@ -1036,8 +1045,24 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                                         const l3 = row.level3 || row.level4 || '';
                                         const prevL3 = idx > 0 ? (nesmaTableData[idx-1].level3 || nesmaTableData[idx-1].level4 || '') : '';
                                         const showL3 = (l3 && l3 !== '无' && l3 !== prevL3) ? l3 : '';
+
+                                        // 迁移维度颜色映射
+                                        const migDimColors = {
+                                            '采集数据迁移': '#0ea5e9',
+                                            'ETL迁移配置': '#8b5cf6',
+                                            '数据汇总迁移': '#f59e0b',
+                                            '外部接口迁移': '#ef4444',
+                                            '流程引擎迁移': '#ec4899',
+                                            '前端应用迁移': '#14b8a6',
+                                            '报表引擎迁移': '#f97316',
+                                            '原有业务': 'var(--text-muted)',
+                                        };
+                                        const migDim = row.migrationDimension || '';
+                                        const migColor = migDimColors[migDim] || '#10b981';
+                                        const isMigration = migDim && migDim !== '原有业务' && migDim !== '';
+
                                         return (
-                                        <tr key={idx}>
+                                        <tr key={idx} style={isMigration ? { background: 'rgba(16,185,129,0.03)' } : {}}>
                                             <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{row.id || idx + 1}</td>
                                             <td style={{ fontWeight: showL1 ? 600 : 400, color: showL1 ? 'var(--nesma-accent)' : 'transparent', fontSize: 12 }}>{showL1 || '—'}</td>
                                             <td style={{ fontWeight: showL2 ? 600 : 400, color: showL2 ? 'var(--text-primary)' : 'transparent', fontSize: 12 }}>{showL2 || '—'}</td>
@@ -1046,6 +1071,20 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                                             <td style={{ textAlign: 'center' }}>
                                                 <span className={`nesma-cat-badge cat-${row.category?.toLowerCase()}`}>{row.category}</span>
                                             </td>
+                                            {hasMigrationCol && (
+                                                <td style={{ textAlign: 'center' }}>
+                                                    {isMigration ? (
+                                                        <span style={{
+                                                            display: 'inline-block', padding: '2px 6px', borderRadius: 10,
+                                                            fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap',
+                                                            background: `${migColor}20`, color: migColor,
+                                                            border: `1px solid ${migColor}40`
+                                                        }}>{migDim}</span>
+                                                    ) : (
+                                                        <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>原有业务</span>
+                                                    )}
+                                                </td>
+                                            )}
                                             <td style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.4 }}>{row.funcDescription || ''}</td>
                                             <td style={{ fontSize: 11, color: row.interfaceDescription && row.interfaceDescription !== '无' ? '#0891b2' : 'var(--text-muted)', lineHeight: 1.4 }}>{row.interfaceDescription && row.interfaceDescription !== '无' ? row.interfaceDescription : '—'}</td>
                                             <td style={{ textAlign: 'center', fontWeight: 600, fontSize: 11 }}>{row.fpCount}</td>
@@ -1059,6 +1098,7 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                     </div>
                 </div>
             )}
+
 
             {/* ═══ Document Preview Modal ═══ */}
             {showPreview && (
