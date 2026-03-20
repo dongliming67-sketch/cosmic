@@ -13,7 +13,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 require('dotenv').config(); // also try CWD
 
 const { callAI, callAIWithRetry, MODEL_MAP } = require('./ai-client');
-const { FUNCTION_EXTRACTION_PROMPT, COSMIC_SPLIT_PROMPT, DOCUMENT_UNDERSTANDING_PROMPT, COVERAGE_VERIFICATION_PROMPT, SUPPLEMENTARY_EXTRACTION_PROMPT } = require('./prompts');
+const { FUNCTION_EXTRACTION_PROMPT, COSMIC_SPLIT_PROMPT, DOCUMENT_UNDERSTANDING_PROMPT, COVERAGE_VERIFICATION_PROMPT, SUPPLEMENTARY_EXTRACTION_PROMPT, COSMIC_MODULE_RECOGNITION_PROMPT, COSMIC_QUANTITY_PRIORITY_PROMPT } = require('./prompts');
 const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
 
 
@@ -729,14 +729,21 @@ app.post('/api/split-chapters', (req, res) => {
 
 app.post('/api/extract-functions', async (req, res) => {
     try {
-        const { documentContent, chapterName = '', userGuidelines = '', userConfig = null } = req.body;
+        const { documentContent, chapterName = '', userGuidelines = '', userConfig = null, extractionMode = 'precise', moduleStructure = null, targetCount = 0 } = req.body;
         if (!documentContent) {
             return res.status(400).json({ error: '缺少文档内容' });
         }
 
         const chapterInfo = chapterName ? `【${chapterName}】章节的` : '';
-        console.log(`📋 开始提取功能过程列表${chapterName ? '（' + chapterName + '）' : ''}...`);
+        const modeLabel = extractionMode === 'quantity' ? '数量优先' : '精准';
+        console.log(`📋 开始提取功能过程列表${chapterName ? '（' + chapterName + '）' : ''}（${modeLabel}模式）...`);
         const modelName = getModelName(userConfig);
+
+        // 根据extractionMode选择系统prompt
+        let activePrompt = FUNCTION_EXTRACTION_PROMPT;
+        if (extractionMode === 'quantity') {
+            activePrompt = COSMIC_QUANTITY_PRIORITY_PROMPT;
+        }
 
         // 构建理解上下文（如果有文档理解结果）
         let understandingHint = '';
@@ -822,14 +829,28 @@ app.post('/api/extract-functions', async (req, res) => {
             }
         }
 
-        let userPrompt = `请从以下${chapterInfo}需求文档中提取所有功能过程列表：\n\n${documentContent}${understandingHint}`;
+        // 构建模块脚手架提示（来自三级模块识别结果）
+        let moduleScaffoldHint = '';
+        if (moduleStructure && moduleStructure.modules && moduleStructure.modules.length > 0) {
+            const scaffoldList = moduleStructure.modules.map(m => {
+                const objs = (m.businessObjects || []).join('、');
+                const triggers = (m.triggerTypes || []).join('、');
+                return `- ${m.level1} > ${m.level2} > ${m.level3}：业务对象[${objs}]，触发类型[${triggers}]，预估 ~${m.estimatedFunctions || '?'} 个功能过程`;
+            }).join('\n');
+            moduleScaffoldHint = `\n\n【三级模块脚手架】以下是文档识别到的三级模块结构，请确保每个模块的功能都被提取，不要遗漏任何模块：\n${scaffoldList}`;
+        }
+
+        let userPrompt = `请从以下${chapterInfo}需求文档中提取所有功能过程列表：\n\n${documentContent}${understandingHint}${moduleScaffoldHint}`;
         if (userGuidelines) {
             userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
+        }
+        if (extractionMode === 'quantity' && targetCount > 0) {
+            userPrompt += `\n\n**目标数量：请严格输出约 ${targetCount} 个功能过程，上下浮动不超过5%。**`;
         }
 
         const completion = await callAIWithRetry({
             messages: [
-                { role: 'system', content: FUNCTION_EXTRACTION_PROMPT },
+                { role: 'system', content: activePrompt },
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
@@ -1452,6 +1473,52 @@ app.post('/api/export-excel', async (req, res) => {
     } catch (error) {
         console.error('导出Excel失败:', error);
         res.status(500).json({ error: '导出Excel失败: ' + error.message });
+    }
+});
+
+// ═══════════════════════ COSMIC 模块识别 ═══════════════════════
+
+app.post('/api/cosmic/recognize-modules', async (req, res) => {
+    try {
+        const { documentContent, userConfig = null } = req.body;
+        if (!documentContent) {
+            return res.status(400).json({ error: '缺少文档内容' });
+        }
+
+        console.log('📑 开始COSMIC模块层级识别...');
+        const modelName = getModelName(userConfig);
+
+        const completion = await callAIWithRetry({
+            messages: [
+                { role: 'system', content: COSMIC_MODULE_RECOGNITION_PROMPT },
+                { role: 'user', content: `请分析以下需求文档的功能模块层级结构：\n\n${documentContent}` }
+            ],
+            model: modelName,
+            temperature: 0.3,
+            max_tokens: 8000
+        });
+
+        if (!completion?.choices?.[0]?.message?.content) {
+            return res.status(500).json({ error: 'AI返回了空响应，请重试' });
+        }
+        const reply = completion.choices[0].message.content;
+
+        let moduleData = null;
+        try {
+            const jsonMatch = reply.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                moduleData = JSON.parse(jsonMatch[0]);
+            }
+        } catch (e) {
+            console.warn('COSMIC模块识别JSON解析失败:', e.message);
+            moduleData = { modules: [], totalEstimated: 0, summary: '解析失败' };
+        }
+
+        console.log(`✅ COSMIC模块识别完成: ${moduleData?.modules?.length || 0} 个模块节点`);
+        res.json({ success: true, moduleData });
+    } catch (error) {
+        console.error('COSMIC模块识别失败:', error);
+        res.status(500).json({ error: 'COSMIC模块识别失败: ' + error.message });
     }
 });
 
