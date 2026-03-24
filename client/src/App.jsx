@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,11 +6,13 @@ import {
     Upload, FileText, Send, Download, Settings, Bot, User, Loader2,
     CheckCircle, AlertCircle, X, Trash2, Copy, Check, Eye, Table,
     Zap, Sparkles, Brain, ChevronDown, Plus, BarChart3, RefreshCw,
-    FileSpreadsheet, Target, Info, Edit3, Scissors, GripVertical, Save
+    FileSpreadsheet, Target, Info, Edit3, Scissors, GripVertical, Save,
+    History, LogOut, BookOpen
 } from 'lucide-react';
 import NesmaApp from './NesmaApp';
+import HistoryPanel from './HistoryPanel';
 
-function App() {
+function App({ user, token, onLogout }) {
     // ═══════════ 状态管理 ═══════════
     const idCounterRef = useRef(0);
     const generateId = () => `func_${Date.now()}_${++idCounterRef.current}`;
@@ -33,6 +35,16 @@ function App() {
     const [userGuidelines, setUserGuidelines] = useState('');
     const [coverageResult, setCoverageResult] = useState(null);
     const [isVerifying, setIsVerifying] = useState(false);
+
+    // 用户会话管理
+    const [currentConversationId, setCurrentConversationId] = useState(null);
+    const [showHistory, setShowHistory] = useState(false);
+    const saveTimerRef = useRef(null);
+
+    // 带认证的axios实例
+    const authAxios = useMemo(() => axios.create({
+        headers: { Authorization: `Bearer ${token}` }
+    }), [token]);
 
     // 分析模式：cosmic 或 nesma
     const [analysisMode, setAnalysisMode] = useState(() => {
@@ -98,6 +110,24 @@ function App() {
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, streamingContent]);
+
+    // 自动保存对话（防抖）
+    useEffect(() => {
+        if (!currentConversationId || !token) return;
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => {
+            const uniqueFuncs = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
+            authAxios.put(`/api/auth/conversations/${currentConversationId}`, {
+                title: documentName || '未命名分析',
+                messages: messages.map(m => ({ role: m.role, content: m.content })),
+                tableData,
+                functionList: functionListText,
+                functionCount: uniqueFuncs.length,
+                cfpCount: tableData.length
+            }).catch(err => console.warn('自动保存失败:', err.message));
+        }, 3000);
+        return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+    }, [messages, tableData, functionListText, documentName, currentConversationId, token]);
 
     // ═══════════ API ═══════════
     const checkApiStatus = async () => {
@@ -195,6 +225,8 @@ function App() {
                 { role: 'assistant', content: '✅ 文档已就绪！您可以在下方输入**特殊拆分要求**，或直接点击**「开始智能拆分」**按钮。' }
                 ]);
                 setIsWaitingForAnalysis(true);
+                // 自动创建对话记录
+                ensureConversation(res.data.filename);
             }
         } catch (error) {
             const msg = error.response?.data?.error || error.message;
@@ -1270,11 +1302,105 @@ function App() {
         }
     };
 
+    // ═══════════ 对话管理函数 ═══════════
+    const createNewConversation = async () => {
+        try {
+            const res = await authAxios.post('/api/auth/conversations', {
+                title: '未命名分析',
+                documentName: '',
+                analysisMode: analysisMode
+            });
+            if (res.data.success) {
+                setCurrentConversationId(res.data.conversationId);
+                return res.data.conversationId;
+            }
+        } catch (err) {
+            console.warn('创建对话失败:', err.message);
+        }
+        return null;
+    };
+
+    const handleNewConversation = () => {
+        setMessages([]);
+        setTableData([]);
+        setDocumentContent('');
+        setDocumentName('');
+        setFunctionListText('');
+        setParsedFunctions([]);
+        setCurrentStep(0);
+        setChapters([]);
+        setModuleStructure(null);
+        setCoverageResult(null);
+        setCurrentConversationId(null);
+        setIsWaitingForAnalysis(false);
+    };
+
+    const handleLoadConversation = (conv) => {
+        setCurrentConversationId(conv.id);
+        setMessages(conv.messages || []);
+        setTableData(conv.table_data || []);
+        setDocumentName(conv.document_name || '');
+        setFunctionListText(conv.function_list || '');
+        setCurrentStep(0);
+        setIsWaitingForAnalysis(false);
+        if (conv.analysis_mode) setAnalysisMode(conv.analysis_mode);
+        showToast('已加载历史分析记录');
+    };
+
+    const handleManualSave = async () => {
+        let convId = currentConversationId;
+        if (!convId) {
+            convId = await createNewConversation();
+            if (!convId) { showToast('保存失败'); return; }
+        }
+        try {
+            const uniqueFuncs = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
+            await authAxios.put(`/api/auth/conversations/${convId}`, {
+                title: documentName || '未命名分析',
+                messages: messages.map(m => ({ role: m.role, content: m.content })),
+                tableData,
+                functionList: functionListText,
+                functionCount: uniqueFuncs.length,
+                cfpCount: tableData.length
+            });
+            showToast('✅ 已保存');
+        } catch (err) {
+            showToast('保存失败: ' + (err.response?.data?.error || err.message));
+        }
+    };
+
+    // 上传文档时自动创建对话
+    const ensureConversation = async (docName) => {
+        if (!currentConversationId && token) {
+            try {
+                const res = await authAxios.post('/api/auth/conversations', {
+                    title: docName || '未命名分析',
+                    documentName: docName || '',
+                    analysisMode
+                });
+                if (res.data.success) {
+                    setCurrentConversationId(res.data.conversationId);
+                }
+            } catch (err) {
+                console.warn('创建对话失败:', err.message);
+            }
+        }
+    };
+
     // ═══════════ 渲染 ═══════════
     return (
         <div className="app-container">
             {/* Toast */}
             {toastMessage && <div className="toast">{toastMessage}</div>}
+
+            {/* 历史记录面板 */}
+            <HistoryPanel
+                token={token}
+                isOpen={showHistory}
+                onClose={() => setShowHistory(false)}
+                onLoadConversation={handleLoadConversation}
+                onNewConversation={handleNewConversation}
+            />
 
             {/* ═══ Sidebar ═══ */}
             <div className="sidebar">
@@ -1287,6 +1413,22 @@ function App() {
                             <h1>{analysisMode === 'cosmic' ? 'COSMIC 拆分' : 'NESMA 拆分'}</h1>
                             <p>{analysisMode === 'cosmic' ? '智能功能规模分析' : '功能点智能拆分'}</p>
                         </div>
+                    </div>
+                    <div className="sidebar-header-actions">
+                        <button
+                            className="btn btn-ghost btn-icon sidebar-history-btn"
+                            onClick={() => setShowHistory(true)}
+                            title="历史记录"
+                        >
+                            <History size={18} />
+                        </button>
+                        <button
+                            className="btn btn-ghost btn-icon sidebar-new-btn"
+                            onClick={handleNewConversation}
+                            title="新建分析"
+                        >
+                            <Plus size={18} />
+                        </button>
                     </div>
                 </div>
 
@@ -1411,6 +1553,22 @@ function App() {
                     <span className={`status-dot ${apiStatus.hasApiKey ? 'online' : 'offline'}`} />
                     <span>{apiStatus.hasApiKey ? '已连接' : '未连接'}</span>
                 </div>
+
+                {/* 用户信息栏 */}
+                {user && (
+                    <div className="sidebar-user-bar">
+                        <div className="sidebar-user-avatar" style={{ background: user.avatarColor || '#6C63FF' }}>
+                            {(user.displayName || user.username || '?').charAt(0).toUpperCase()}
+                        </div>
+                        <div className="sidebar-user-info">
+                            <span className="sidebar-user-name">{user.displayName || user.username}</span>
+                            <span className="sidebar-user-id">@{user.username}</span>
+                        </div>
+                        <button className="btn btn-ghost btn-icon sidebar-logout-btn" onClick={onLogout} title="退出登录">
+                            <LogOut size={16} />
+                        </button>
+                    </div>
+                )}
             </div>
 
             {/* ═══ Main Content (conditionally rendered based on mode) ═══ */}
@@ -1451,6 +1609,9 @@ function App() {
                                         </button>
                                     </>
                                 )}
+                                <button className="btn btn-secondary btn-sm" onClick={handleManualSave} title="保存当前分析">
+                                    <Save size={14} /> 保存
+                                </button>
                                 <button className="btn btn-ghost btn-icon" onClick={clearChat} title="清空对话">
                                     <Trash2 size={16} />
                                 </button>

@@ -15,6 +15,8 @@ require('dotenv').config(); // also try CWD
 const { callAI, callAIWithRetry, MODEL_MAP } = require('./ai-client');
 const { FUNCTION_EXTRACTION_PROMPT, COSMIC_SPLIT_PROMPT, DOCUMENT_UNDERSTANDING_PROMPT, COVERAGE_VERIFICATION_PROMPT, SUPPLEMENTARY_EXTRACTION_PROMPT, COSMIC_MODULE_RECOGNITION_PROMPT, COSMIC_QUANTITY_PRIORITY_PROMPT } = require('./prompts');
 const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
+const { authRouter } = require('./auth');
+const { initDatabase } = require('./database');
 
 
 const app = express();
@@ -29,6 +31,9 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// 挂载认证路由
+app.use('/api/auth', authRouter);
 
 // 服务前端静态文件
 if (process.env.NODE_ENV === 'production') {
@@ -2454,8 +2459,17 @@ if (process.env.NODE_ENV === 'production') {
 
 // ═══════════════════════ 启动服务 ═══════════════════════
 
-app.listen(PORT, () => {
-    console.log(`
+(async () => {
+    try {
+        // 初始化 PostgreSQL 数据库表结构
+        await initDatabase();
+        console.log('✅ 数据库就绪');
+    } catch (err) {
+        console.error('⚠️ 数据库初始化失败，登录/历史功能将不可用:', err.message);
+    }
+
+    app.listen(PORT, () => {
+        console.log(`
 ╔══════════════════════════════════════════════════════════╗
 ║         COSMIC 功能规模智能分析拆分系统 v2.0             ║
 ╠══════════════════════════════════════════════════════════╣
@@ -2463,6 +2477,8 @@ app.listen(PORT, () => {
 ║  🤖 当前模型: ${currentModel.padEnd(40)}║
 ║  📡 API平台: 心流开放平台 (iflow.cn)                    ║
 ║  🔑 API密钥: ${process.env.IFLOW_API_KEY ? '已配置 ✅' : '未配置 ❌'}                               ║
+║  🐘 数据库:  PostgreSQL (Render)                        ║
 ╚══════════════════════════════════════════════════════════╝
-  `);
-});
+      `);
+    });
+})();

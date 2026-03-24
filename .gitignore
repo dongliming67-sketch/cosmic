@@ -4,3 +4,4 @@ client/dist/
 client/node_modules/
 *.log
 uploads/
+data/
