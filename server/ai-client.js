@@ -138,28 +138,32 @@ async function callAI(options) {
 
 /**
  * 带重试机制的AI调用
+ * - 449/429 rate limit: 指数退避，从10秒起，最长60秒，带随机抖动
+ * - 网络/JSON错误: 指数退避，从3秒起
  * @param {Object} options - callAI的选项
  * @param {number} maxRetries - 最大重试次数
  * @returns {Object} AI响应
  */
-async function callAIWithRetry(options, maxRetries = 4) {
-    const baseDelay = 3000;
+async function callAIWithRetry(options, maxRetries = 6) {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
             if (attempt > 0) {
-                const delay = baseDelay * (attempt + 1);
-                console.log(`   ⏳ 第 ${attempt + 1} 次重试，等待 ${delay / 1000} 秒...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
+                // 日志已在上一轮 catch 中输出
             }
 
             return await callAI(options);
         } catch (error) {
             const status = error.status || error.response?.status;
-            const isRetryable = status === 429 || status === 500 || status === 502 || status === 503
+            const isRateLimit = status === 429 || status === 449
+                || error.message?.includes('429') || error.message?.includes('449')
+                || error.message?.includes('rate limit') || error.message?.includes('Rate Limit')
+                || error.message?.includes('exceeded your current rate');
+            const isRetryable = isRateLimit
+                || status === 500 || status === 502 || status === 503
                 || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED'
                 || error.code === 'ERR_STREAM_PREMATURE_CLOSE' || error.code === 'ECONNREFUSED'
-                || error.message?.includes('timeout') || error.message?.includes('429')
+                || error.message?.includes('timeout')
                 || error.message?.includes('Unexpected end of JSON') || error.message?.includes('invalid json response body')
                 || error.message?.includes('unexpected end of file')
                 || error.message?.includes('Premature close') || error.message?.includes('premature close')
@@ -168,6 +172,19 @@ async function callAIWithRetry(options, maxRetries = 4) {
             console.warn(`   ⚠️ AI调用失败 (尝试 ${attempt + 1}/${maxRetries}): [${status || error.code || '?'}] ${error.message?.substring(0, 200)}`);
 
             if (isRetryable && attempt < maxRetries - 1) {
+                // Rate limit: 更激进的退避 (10s, 20s, 40s, 60s, 60s ...)
+                // 普通错误: 常规退避 (3s, 6s, 12s, 24s, 48s ...)
+                let delay;
+                if (isRateLimit) {
+                    delay = Math.min(10000 * Math.pow(2, attempt), 60000);
+                    console.log(`   🚫 触发限流(${status || '?'})，第 ${attempt + 1} 次重试，等待 ${(delay / 1000).toFixed(0)} 秒...`);
+                } else {
+                    delay = Math.min(3000 * Math.pow(2, attempt), 30000);
+                    console.log(`   ⏳ 第 ${attempt + 1} 次重试，等待 ${(delay / 1000).toFixed(0)} 秒...`);
+                }
+                // 加入随机抖动 ±20%，避免多请求同时重试雪崩
+                const jitter = delay * (0.8 + Math.random() * 0.4);
+                await new Promise(resolve => setTimeout(resolve, jitter));
                 continue;
             }
             throw error;

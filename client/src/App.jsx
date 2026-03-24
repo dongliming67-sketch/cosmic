@@ -577,11 +577,11 @@ function App({ user, token, onLogout }) {
                     totalCount += res.data.count || 0;
                 }
 
-                // 章节间等待，避免频率限制
+                // 章节间等待，避免频率限制（DeepSeek平台限流严格）
                 if (i < selectedChapters.length - 1) {
                     try {
                         await new Promise((resolve, reject) => {
-                            const t = setTimeout(resolve, 2000);
+                            const t = setTimeout(resolve, 4000);
                             signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                         });
                     } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
@@ -737,10 +737,10 @@ function App({ user, token, onLogout }) {
                                 content: `⚠️ **批次 ${bi + 1} 失败**: ${batchErrMsg}\n\n已跳过该批次，继续处理剩余批次...`
                             }];
                         });
-                        // 等一下再尝试下一批
+                        // 失败后等更久再尝试下一批
                         try {
                             await new Promise((resolve, reject) => {
-                                const t = setTimeout(resolve, 2000);
+                                const t = setTimeout(resolve, 8000);
                                 signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                             });
                         } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
@@ -751,11 +751,11 @@ function App({ user, token, onLogout }) {
                     }
                 }
 
-                // 批次间等待，避免限流
+                // 批次间等待，避免限流（DeepSeek平台限流严格，需要较长间隔）
                 if (bi < totalBatches - 1) {
                     try {
                         await new Promise((resolve, reject) => {
-                            const t = setTimeout(resolve, 1500);
+                            const t = setTimeout(resolve, 5000);
                             signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                         });
                     } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
@@ -905,7 +905,7 @@ function App({ user, token, onLogout }) {
                 if (round <= maxRounds) {
                     try {
                         await new Promise((resolve, reject) => {
-                            const t = setTimeout(resolve, 1500);
+                            const t = setTimeout(resolve, 5000);
                             signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                         });
                     } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
