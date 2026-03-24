@@ -957,6 +957,89 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
     }
 });
 
+// ═══════════════════════ COSMIC分段拆分（批次模式） ═══════════════════════
+
+app.post('/api/cosmic-split-batch', async (req, res) => {
+    try {
+        const {
+            batchFunctions = [],       // 本批次要拆分的功能过程文本列表
+            batchIndex = 0,            // 当前批次序号
+            totalBatches = 1,          // 总批次数
+            documentContent = '',      // 参考文档
+            userGuidelines = '',       // 用户特殊要求
+            previousResults = [],      // 之前批次已完成的结果（用于避免重复）
+            userConfig = null
+        } = req.body;
+
+        if (!batchFunctions || batchFunctions.length === 0) {
+            return res.status(400).json({ error: '缺少本批次的功能过程列表' });
+        }
+
+        console.log(`🔄 COSMIC分段拆分 (批次 ${batchIndex + 1}/${totalBatches}): ${batchFunctions.length} 个功能过程...`);
+        const modelName = getModelName(userConfig);
+
+        // 将本批次功能过程组成文本
+        const batchFunctionText = batchFunctions.join('\n\n');
+
+        // 构建提示
+        let userPrompt = `请对以下 ${batchFunctions.length} 个功能过程进行COSMIC拆分（批次 ${batchIndex + 1}/${totalBatches}）：
+
+${batchFunctionText}
+
+**【重要】请严格按照上方功能过程列表的先后顺序进行拆分输出，不要打乱顺序。**
+每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程。
+只输出Markdown表格，不要其他说明。`;
+
+        // 如果有之前批次的结果，提醒避免重复
+        if (previousResults.length > 0) {
+            const completedFunctions = [...new Set(previousResults.map(r => r.functionalProcess).filter(Boolean))];
+            if (completedFunctions.length > 0) {
+                userPrompt += `\n\n## 已完成的功能过程（请勿重复，共${completedFunctions.length}个）：
+${completedFunctions.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join('\n')}${completedFunctions.length > 30 ? `\n...（共${completedFunctions.length}个）` : ''}`;
+            }
+        }
+
+        if (documentContent) {
+            // 只传部分文档内容作为参考
+            userPrompt += `\n\n参考文档内容（摘要）：\n${documentContent.substring(0, 4000)}`;
+        }
+        if (userGuidelines) {
+            userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
+        }
+
+        const completion = await callAIWithRetry({
+            messages: [
+                { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                { role: 'user', content: userPrompt }
+            ],
+            model: modelName,
+            temperature: 0.5,
+            max_tokens: 16000
+        });
+
+        if (!completion?.choices?.[0]?.message?.content) {
+            console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
+            return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
+        }
+        const reply = completion.choices[0].message.content;
+        const tableData = parseMarkdownTable(reply);
+
+        console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程`);
+        res.json({
+            success: true,
+            reply,
+            tableData,
+            count: tableData.length,
+            batchIndex,
+            totalBatches
+        });
+    } catch (error) {
+        console.error(`COSMIC分段拆分失败 (批次 ${req.body.batchIndex + 1}):`, error.message);
+        const errMsg = error.message || '未知错误';
+        res.status(500).json({ error: `COSMIC分段拆分失败 (批次 ${(req.body.batchIndex || 0) + 1}): ` + errMsg });
+    }
+});
+
 // ═══════════════════════ 循环分析（一键完成模式） ═══════════════════════
 
 app.post('/api/continue-analyze', async (req, res) => {

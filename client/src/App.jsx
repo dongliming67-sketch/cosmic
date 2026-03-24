@@ -639,15 +639,19 @@ function App({ user, token, onLogout }) {
         await startChapterRecognition();
     };
 
-    // ═══════════ 两步骤模式：阶段2 - COSMIC拆分（多轮） ═══════════
+    // ═══════════ 两步骤模式：阶段2 - COSMIC分段拆分（批次模式，断网安全） ═══════════
+    const COSMIC_BATCH_SIZE = 5; // 每批拆分5个功能过程
+
     const startCosmicSplit = async () => {
         // 先同步结构化数据回 text
-        let textForSplit = functionListText;
-        if (parsedFunctions.length > 0) {
-            textForSplit = functionsToText(parsedFunctions);
-            setFunctionListText(textForSplit);
+        let activeFunctions = parsedFunctions.filter(f => f.selected !== false);
+        if (activeFunctions.length === 0) {
+            // 回退到旧模式：用纯文本
+            let textForSplit = functionListText;
+            if (!textForSplit) { showToast('请先提取功能过程列表'); return; }
+            activeFunctions = parseFunctionListText(textForSplit).filter(f => f.selected !== false);
+            if (activeFunctions.length === 0) { showToast('未找到功能过程'); return; }
         }
-        if (!textForSplit) { showToast('请先提取功能过程列表'); return; }
 
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
@@ -656,54 +660,99 @@ function App({ user, token, onLogout }) {
         setIsLoading(true);
         setCurrentStep(4);
         setTableData([]);
-        setMessages(prev => [...prev, { role: 'system', content: '🔄 **阶段2：COSMIC拆分**\n正在对功能过程进行ERWX拆分...' }]);
+
+        // 将功能过程分批
+        const totalFunctions = activeFunctions.length;
+        const batches = [];
+        for (let i = 0; i < totalFunctions; i += COSMIC_BATCH_SIZE) {
+            const batchFuncs = activeFunctions.slice(i, i + COSMIC_BATCH_SIZE);
+            // 将每个功能过程转为文本格式
+            const batchTexts = batchFuncs.map(f =>
+                `##触发事件：${f.triggerEvent || '用户触发'}\n##功能用户：${f.functionalUser || '发起者：用户 接收者：用户'}\n##功能过程：${f.functionName}\n##功能过程描述：${f.description || ''}`
+            );
+            batches.push({ functions: batchFuncs, texts: batchTexts });
+        }
+
+        const totalBatches = batches.length;
+        setMessages(prev => [...prev, {
+            role: 'system',
+            content: `🔄 **阶段2：COSMIC分段拆分**\n共 **${totalFunctions}** 个功能过程，分为 **${totalBatches}** 个批次（每批 ${COSMIC_BATCH_SIZE} 个），逐批拆分中...\n\n💡 *分段模式：即使中途断网，已完成的批次数据也会保留。*`
+        }]);
 
         let allTableData = [];
-        let round = 1;
-        const maxRounds = 5;
+        let completedBatches = 0;
+        let failedBatches = [];
 
         try {
-            while (round <= maxRounds) {
+            for (let bi = 0; bi < totalBatches; bi++) {
                 if (signal.aborted) return;
 
-                // 更新进度提示
-                if (round > 1) {
-                    const completedFuncs = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
-                    setMessages(prev => {
-                        const filtered = prev.filter(m => !m.content.startsWith('🔄'));
-                        return [...filtered, {
-                            role: 'system',
-                            content: `🔄 **第 ${round} 轮拆分** | 已完成 ${completedFuncs.length} 个功能过程，继续拆分剩余功能...`
-                        }];
-                    });
+                const batch = batches[bi];
+                const batchFuncNames = batch.functions.map(f => f.functionName).join('、');
+
+                // 更新进度
+                setMessages(prev => {
+                    const filtered = prev.filter(m => !m.content.startsWith('🔄 **批次'));
+                    return [...filtered, {
+                        role: 'system',
+                        content: `🔄 **批次 ${bi + 1}/${totalBatches}** | 正在拆分：${batchFuncNames}\n\n进度：${completedBatches}/${totalBatches} 批次完成，已获得 ${allTableData.length} 个子过程`
+                    }];
+                });
+
+                try {
+                    const res = await axios.post('/api/cosmic-split-batch', {
+                        batchFunctions: batch.texts,
+                        batchIndex: bi,
+                        totalBatches,
+                        documentContent: documentContent.substring(0, 6000),
+                        userGuidelines,
+                        previousResults: allTableData,
+                        userConfig: getUserConfig()
+                    }, { signal });
+
+                    if (res.data.success) {
+                        const newData = res.data.tableData || [];
+                        if (newData.length > 0) {
+                            const deduped = deduplicateData(allTableData, newData);
+                            if (deduped.length > 0) {
+                                allTableData = [...allTableData, ...deduped];
+                                setTableData(allTableData);
+                            }
+                        }
+                        completedBatches++;
+                    }
+                } catch (batchError) {
+                    if (batchError.name === 'AbortError' || batchError.name === 'CanceledError' || signal.aborted) return;
+
+                    const batchErrMsg = batchError.response?.data?.error || batchError.message;
+                    console.error(`批次 ${bi + 1} 失败:`, batchErrMsg);
+                    failedBatches.push({ index: bi, names: batchFuncNames, error: batchErrMsg });
+
+                    // 如果已有部分数据，继续下一批（容错）
+                    if (allTableData.length > 0) {
+                        setMessages(prev => {
+                            const filtered = prev.filter(m => !m.content.startsWith('🔄 **批次'));
+                            return [...filtered, {
+                                role: 'system',
+                                content: `⚠️ **批次 ${bi + 1} 失败**: ${batchErrMsg}\n\n已跳过该批次，继续处理剩余批次...`
+                            }];
+                        });
+                        // 等一下再尝试下一批
+                        try {
+                            await new Promise((resolve, reject) => {
+                                const t = setTimeout(resolve, 2000);
+                                signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                            });
+                        } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                        continue;
+                    } else {
+                        // 第一批就失败，抛出
+                        throw batchError;
+                    }
                 }
 
-                const res = await axios.post('/api/cosmic-split', {
-                    functionList: textForSplit,
-                    documentContent: documentContent.substring(0, 8000),
-                    userGuidelines,
-                    previousResults: allTableData,
-                    batchIndex: round - 1,
-                    totalBatches: maxRounds,
-                    userConfig: getUserConfig()
-                }, { signal });
-
-                if (res.data.success) {
-                    const newData = res.data.tableData || [];
-                    if (newData.length === 0) break; // AI没有返回新数据，结束
-
-                    // 去重合并
-                    const deduped = deduplicateData(allTableData, newData);
-                    if (deduped.length === 0) break; // 没有新的功能过程，结束
-
-                    allTableData = [...allTableData, ...deduped];
-                    setTableData(allTableData);
-                }
-
-                round++;
-
-                // 等待一下再继续
-                if (round <= maxRounds) {
+                // 批次间等待，避免限流
+                if (bi < totalBatches - 1) {
                     try {
                         await new Promise((resolve, reject) => {
                             const t = setTimeout(resolve, 1500);
@@ -715,11 +764,24 @@ function App({ user, token, onLogout }) {
 
             // 最终汇总
             const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+            let summaryContent = `🎉 **COSMIC分段拆分完成！**\n\n`;
+            summaryContent += `📦 共 **${totalBatches}** 个批次，成功 **${completedBatches}** 个`;
+            if (failedBatches.length > 0) {
+                summaryContent += `，失败 **${failedBatches.length}** 个`;
+            }
+            summaryContent += `\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
+            summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
+
+            if (failedBatches.length > 0) {
+                summaryContent += `\n\n⚠️ 以下批次拆分失败，可点击**「重新COSMIC拆分」**重试：\n`;
+                summaryContent += failedBatches.map(fb => `- 批次 ${fb.index + 1}: ${fb.names} (${fb.error})`).join('\n');
+            }
+
             setMessages(prev => {
                 const filtered = prev.filter(m => !m.content.startsWith('🔄'));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `🎉 **COSMIC拆分完成！**\n\n经过 **${round - 1}** 轮拆分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
+                    content: summaryContent,
                     showActions: true
                 }];
             });
@@ -733,7 +795,7 @@ function App({ user, token, onLogout }) {
                     const filtered = prev.filter(m => !m.content.startsWith('🔄'));
                     return [...filtered, {
                         role: 'assistant',
-                        content: `⚠️ **拆分部分完成**（第 ${round} 轮出错: ${error.response?.data?.error || error.message}）\n\n已完成部分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）`,
+                        content: `⚠️ **拆分部分完成**（${completedBatches}/${totalBatches} 批次成功，后续批次出错: ${error.response?.data?.error || error.message}）\n\n已完成部分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n\n💡 已完成的数据已保留，可点击**「重新COSMIC拆分」**继续。`,
                         showActions: true
                     }];
                 });
