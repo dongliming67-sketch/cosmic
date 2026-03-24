@@ -909,10 +909,11 @@ ${functionList}
 ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 
 **请只拆分上面列表中未出现在"已完成"中的功能过程。**
+**【重要】请严格按照上方功能过程列表的顺序进行拆分输出，不要打乱顺序。列表的顺序对应文档的章节顺序。**
 每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程。
 只输出Markdown表格，不要其他说明。`;
         } else {
-            userPrompt = `请对以下功能过程进行COSMIC拆分：\n\n${functionList}`;
+            userPrompt = `请对以下功能过程进行COSMIC拆分：\n\n${functionList}\n\n**【重要】请严格按照上方功能过程列表的先后顺序进行拆分输出，不要打乱顺序。列表的顺序对应文档的章节/目录顺序，输出结果必须保持一致。**`;
         }
 
         if (documentContent) {
@@ -1330,7 +1331,7 @@ app.post('/api/parse-table', (req, res) => {
 
 app.post('/api/chat/stream', async (req, res) => {
     try {
-        const { messages, documentContent, userGuidelines = '', userConfig = null } = req.body;
+        const { messages, documentContent, userGuidelines = '', userConfig = null, tableData = [], functionListText = '' } = req.body;
         const modelName = getModelName(userConfig);
 
         res.setHeader('Content-Type', 'text/event-stream');
@@ -1339,10 +1340,55 @@ app.post('/api/chat/stream', async (req, res) => {
         res.setHeader('X-Accel-Buffering', 'no');
 
         const chatMessages = [
-            { role: 'system', content: COSMIC_SPLIT_PROMPT }
+            { role: 'system', content: COSMIC_SPLIT_PROMPT + `\n\n你现在处于对话模式。用户会对当前的COSMIC拆分结果提出整改意见和修改要求。请认真分析用户的反馈，基于当前拆分结果进行针对性的修改和优化。\n如果用户要求修改某些功能过程的拆分，请输出修改后的完整Markdown表格（只包含被修改的功能过程即可）。\n如果用户的问题不涉及具体修改，请给出专业的分析和建议。` }
         ];
 
+        // 构建当前分析上下文
+        let contextContent = '';
         if (documentContent) {
+            contextContent += `## 原始需求文档（摘要）\n${documentContent.substring(0, 4000)}\n\n`;
+        }
+        if (functionListText) {
+            contextContent += `## 当前功能过程列表\n${functionListText.substring(0, 3000)}\n\n`;
+        }
+        if (tableData && tableData.length > 0) {
+            // 将现有的拆分结果构建成摘要，让AI能看到
+            const uniqueFuncs = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
+            const funcSummary = uniqueFuncs.map(func => {
+                const rows = tableData.filter(r => r.functionalProcess === func || (!r.functionalProcess && r.dataMovementType !== 'E'));
+                const funcRows = tableData.filter(r => {
+                    // 找到属于这个功能过程的所有行
+                    let currentFunc = '';
+                    for (const row of tableData) {
+                        if (row.dataMovementType === 'E' && row.functionalProcess) currentFunc = row.functionalProcess;
+                        if (row === r) return currentFunc === func;
+                    }
+                    return false;
+                });
+                const types = funcRows.map(r => `${r.dataMovementType}:${r.subProcessDesc}`).join(', ');
+                return `- ${func}: ${funcRows.length}个子过程 [${types}]`;
+            }).join('\n');
+
+            contextContent += `## 当前COSMIC拆分结果（共${uniqueFuncs.length}个功能过程，${tableData.length}个子过程/CFP）\n${funcSummary}\n\n`;
+            contextContent += `### 拆分结果明细表\n|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|\n|:---|:---|:---|:---|:---|:---|:---|\n`;
+            // 限制表格行数避免超长
+            const maxRows = Math.min(tableData.length, 100);
+            for (let i = 0; i < maxRows; i++) {
+                const r = tableData[i];
+                contextContent += `|${r.functionalUser || ''}|${r.triggerEvent || ''}|${r.functionalProcess || ''}|${r.subProcessDesc || ''}|${r.dataMovementType || ''}|${r.dataGroup || ''}|${r.dataAttributes || ''}|\n`;
+            }
+            if (tableData.length > maxRows) {
+                contextContent += `\n...（共${tableData.length}行，此处仅展示前${maxRows}行）\n`;
+            }
+        }
+
+        if (contextContent) {
+            let guidelinesText = userGuidelines ? `\n用户特殊要求：${userGuidelines}\n` : '';
+            chatMessages.push({
+                role: 'assistant',
+                content: `我已完成COSMIC拆分分析，以下是当前结果：\n\n${contextContent}${guidelinesText}\n\n请问您对以上拆分结果有什么修改意见？`
+            });
+        } else if (documentContent) {
             let guidelinesText = userGuidelines ? `\n用户要求：${userGuidelines}\n` : '';
             chatMessages.push({
                 role: 'user',

@@ -885,7 +885,9 @@ function App({ user, token, onLogout }) {
                     messages: [{ role: 'user', content: userMessage }],
                     documentContent,
                     userGuidelines,
-                    userConfig: getUserConfig()
+                    userConfig: getUserConfig(),
+                    tableData,
+                    functionListText
                 })
             });
 
