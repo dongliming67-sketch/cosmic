@@ -1044,17 +1044,21 @@ ${completedFunctions.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
 app.post('/api/continue-analyze', async (req, res) => {
     try {
-        const { documentContent, previousResults = [], round = 1, targetFunctions = 30, understanding = null, userGuidelines = '', userConfig = null, coverageVerification: prevCoverage = null } = req.body;
+        const { documentContent, previousResults = [], round = 1, targetFunctions = 30, understanding = null, userGuidelines = '', userConfig = null, coverageVerification: prevCoverage = null, extractionMode = 'precise' } = req.body;
 
         const completedFunctions = [...new Set(previousResults.map(r => r.functionalProcess).filter(Boolean))];
         const modelName = getModelName(userConfig);
+        const isQuantityMode = extractionMode === 'quantity';
 
-        // 动态调整目标功能数：优先使用文档理解阶段的预估值（上浮10%确保覆盖）
-        const effectiveTarget = (understanding?.totalEstimatedFunctions && understanding.totalEstimatedFunctions > targetFunctions)
-            ? Math.ceil(understanding.totalEstimatedFunctions * 1.1)
-            : targetFunctions;
-        if (effectiveTarget !== targetFunctions) {
-            console.log(`📊 目标功能数已动态调整: ${targetFunctions} → ${effectiveTarget}（基于文档理解预估）`);
+        // 仅数量优先模式才使用目标数量
+        let effectiveTarget = null;
+        if (isQuantityMode) {
+            effectiveTarget = (understanding?.totalEstimatedFunctions && understanding.totalEstimatedFunctions > targetFunctions)
+                ? Math.ceil(understanding.totalEstimatedFunctions * 1.1)
+                : targetFunctions;
+            if (effectiveTarget !== targetFunctions) {
+                console.log(`📊 目标功能数已动态调整: ${targetFunctions} → ${effectiveTarget}（基于文档理解预估）`);
+            }
         }
 
         // 构建理解上下文
@@ -1111,12 +1115,15 @@ app.post('/api/continue-analyze', async (req, res) => {
         let userPrompt = '';
         if (round === 1) {
             let guidelinesContext = userGuidelines ? `\n用户特定要求：${userGuidelines}` : '';
+            const targetHint = isQuantityMode
+                ? `，目标约 ${effectiveTarget} 个功能过程`
+                : `，请完整无遗漏地提取文档中所有功能过程，数量以文档实际内容为准`;
             userPrompt = `以下是功能文档内容：
 ${guidelinesContext}
 ${documentContent}
 ${understandingContext}
 
-请对文档中的功能进行COSMIC拆分，目标约 ${effectiveTarget} 个功能过程。
+请对文档中的功能进行COSMIC拆分${targetHint}。
 
 **输出格式**：只输出Markdown表格，不要额外说明。
 
@@ -1136,6 +1143,10 @@ ${understandingContext}
                 missedHint = `\n\n## 覆盖度审查发现的遗漏功能（请优先补充这些！）：\n${missedList}`;
             }
 
+            const targetRequirement = isQuantityMode
+                ? `- 目标 ${effectiveTarget} 个功能过程，当前还差 ${Math.max(0, effectiveTarget - completedFunctions.length)} 个`
+                : `- 请完整提取文档中所有尚未覆盖的功能过程，不设数量限制，以文档实际内容为准`;
+
             userPrompt = `继续分析文档中尚未拆分的功能过程。
 
 ## 原始需求文档（请仔细阅读，找出尚未拆分的功能）：
@@ -1147,7 +1158,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 ${missedHint}
 
 ## 要求
-- 目标 ${effectiveTarget} 个功能过程，当前还差 ${Math.max(0, effectiveTarget - completedFunctions.length)} 个
+${targetRequirement}
 - 请仔细逐段阅读文档，找出上面"已完成"列表中未覆盖的功能
 - 每个功能过程必须有 E + R + W + X 四种子过程
 - 只输出Markdown表格，不要其他说明
@@ -1179,8 +1190,8 @@ ${missedHint}
         }
         const hasValidTable = reply.includes('|') && (reply.includes('|E|') || reply.includes('| E |'));
         if (!hasValidTable && round > 1) isDone = true;
-        // 不再以达到目标数为硬性终止条件，改为日志提示
-        if (completedFunctions.length >= effectiveTarget && !isDone) {
+        // 仅数量优先模式才检查目标数
+        if (isQuantityMode && effectiveTarget && completedFunctions.length >= effectiveTarget && !isDone) {
             console.log(`📊 已达到目标数 ${effectiveTarget}，但继续检查是否有遗漏...`);
         }
         if (round >= 15) isDone = true;

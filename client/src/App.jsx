@@ -870,7 +870,9 @@ function App({ user, token, onLogout }) {
                     const filtered = prev.filter(m => !m.content.startsWith('🔄'));
                     return [...filtered, {
                         role: 'system',
-                        content: `🔄 **第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / 目标 ${minFunctionCount} 个功能过程`
+                        content: extractionMode === 'quantity'
+                            ? `🔄 **第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / 目标 ${minFunctionCount} 个功能过程`
+                            : `🔄 **第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / ${[...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))].length} 个功能过程`
                     }];
                 });
 
@@ -882,7 +884,8 @@ function App({ user, token, onLogout }) {
                     understanding,
                     userGuidelines,
                     userConfig: getUserConfig(),
-                    coverageVerification: lastCoverage
+                    coverageVerification: lastCoverage,
+                    extractionMode
                 }, { signal });
 
                 if (response.data.success) {
@@ -918,7 +921,7 @@ function App({ user, token, onLogout }) {
                 const filtered = prev.filter(m => !m.content.startsWith('🔄'));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `🎉 **分析完成！**\n\n经过 **${round}** 轮分析：\n- **${uniqueFunctions.length}** 个功能过程 ${uniqueFunctions.length >= minFunctionCount ? '✅' : '⚠️'}\n- **${allTableData.length}** 个子过程（CFP）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
+                    content: `🎉 **分析完成！**\n\n经过 **${round}** 轮分析：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
                     showActions: true
                 }];
             });
