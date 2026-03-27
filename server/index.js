@@ -1517,7 +1517,7 @@ app.post('/api/chat/stream', async (req, res) => {
 
 app.post('/api/export-excel', async (req, res) => {
     try {
-        const { tableData, filename = 'COSMIC拆分结果' } = req.body;
+        const { tableData, filename = 'COSMIC拆分结果', sequenceDiagrams } = req.body;
 
         if (!tableData || tableData.length === 0) {
             return res.status(400).json({ error: '没有可导出的数据' });
@@ -1608,6 +1608,129 @@ app.post('/api/export-excel', async (req, res) => {
 
         // 冻结表头
         worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+        // ═══════════ 时序图工作表（如有） ═══════════
+        if (sequenceDiagrams && sequenceDiagrams.length > 0) {
+            console.log(`📊 正在嵌入 ${sequenceDiagrams.length} 张时序图到Excel...`);
+            const ws2 = workbook.addWorksheet('功能时序图');
+
+            // 设置列宽（图片要跨越多列，给足宽度）
+            ws2.columns = [
+                { width: 4 },   // A: 序号
+                { width: 30 },  // B: 功能过程名
+                { width: 12 },  // C: ERWX统计
+                { width: 12 },  // D
+                { width: 12 },  // E
+                { width: 12 },  // F
+                { width: 12 },  // G
+                { width: 12 },  // H
+                { width: 12 },  // I
+                { width: 12 },  // J
+                { width: 12 },  // K
+                { width: 12 },  // L
+            ];
+
+            // 标题行
+            const titleRow = ws2.addRow(['', '📊 COSMIC 功能时序图集', '', '', '', '', '', '', '', '', '', '']);
+            ws2.mergeCells(`B${titleRow.number}:L${titleRow.number}`);
+            titleRow.getCell(2).font = { bold: true, size: 16, color: { argb: 'FF6C5CE7' } };
+            titleRow.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
+            titleRow.height = 36;
+
+            const subtitleRow = ws2.addRow(['', `共 ${sequenceDiagrams.length} 个功能过程`, '', '', '', '', '', '', '', '', '', '']);
+            ws2.mergeCells(`B${subtitleRow.number}:L${subtitleRow.number}`);
+            subtitleRow.getCell(2).font = { size: 11, color: { argb: 'FF636E72' } };
+            subtitleRow.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
+            subtitleRow.height = 24;
+
+            // 空行
+            ws2.addRow([]);
+
+            // 构建功能过程 → 统计信息映射
+            const processStats = {};
+            let curProc = '';
+            tableData.forEach(row => {
+                if (row.functionalProcess) curProc = row.functionalProcess;
+                if (!processStats[curProc]) processStats[curProc] = { E: 0, R: 0, W: 0, X: 0, total: 0 };
+                if (row.dataMovementType) {
+                    processStats[curProc][row.dataMovementType] = (processStats[curProc][row.dataMovementType] || 0) + 1;
+                    processStats[curProc].total++;
+                }
+            });
+
+            // 逐个插入时序图
+            for (let i = 0; i < sequenceDiagrams.length; i++) {
+                const diag = sequenceDiagrams[i];
+                const currentRow = ws2.rowCount + 1;
+
+                // ── 功能过程标题行 ──
+                const cleanName = (diag.processName || '').replace(/\[.*?\]\s*/, '').trim();
+                const headerR = ws2.addRow(['', `${i + 1}. ${cleanName}`, '', '', '', '', '', '', '', '', '', '']);
+                ws2.mergeCells(`B${headerR.number}:L${headerR.number}`);
+                headerR.getCell(2).font = { bold: true, size: 13, color: { argb: 'FF1A1A2E' } };
+                headerR.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F0FF' } };
+                headerR.getCell(2).alignment = { vertical: 'middle' };
+                headerR.getCell(2).border = {
+                    bottom: { style: 'medium', color: { argb: 'FF6C5CE7' } }
+                };
+                headerR.height = 28;
+
+                // ── ERWX 统计行 ──
+                const stats = processStats[diag.processName] || { E: 0, R: 0, W: 0, X: 0, total: 0 };
+                const statsR = ws2.addRow(['', `E×${stats.E}  R×${stats.R}  W×${stats.W}  X×${stats.X}  │  共 ${stats.total} CFP`, '', '', '', '', '', '', '', '', '', '']);
+                ws2.mergeCells(`B${statsR.number}:L${statsR.number}`);
+                statsR.getCell(2).font = { size: 10, color: { argb: 'FF636E72' } };
+                statsR.getCell(2).alignment = { vertical: 'middle' };
+                statsR.height = 20;
+
+                // ── 插入图片 ──
+                try {
+                    const imageId = workbook.addImage({
+                        base64: diag.imageBase64,
+                        extension: 'png',
+                    });
+
+                    // 计算图片在 Excel 中的行数
+                    // 每个 Excel 行约 15px，图片原始高度(px) / 15 = 需要的行数
+                    const imgWidth = diag.width || 800;
+                    const imgHeight = diag.height || 400;
+
+                    // 目标宽度约 700px（B-L列的总宽度），保持比例
+                    const targetWidthPx = 700;
+                    const scale = Math.min(1, targetWidthPx / imgWidth);
+                    const displayHeight = imgHeight * scale;
+                    const rowsNeeded = Math.max(12, Math.ceil(displayHeight / 15) + 2);
+
+                    // 图片起始行（当前工作表最后一行的下一行）
+                    const imgStartRow = ws2.rowCount;
+
+                    // 预先添加空行让图片有位置
+                    for (let r = 0; r < rowsNeeded; r++) {
+                        ws2.addRow([]);
+                    }
+
+                    // 使用 tl/br 锚定方式放置图片
+                    ws2.addImage(imageId, {
+                        tl: { col: 1, row: imgStartRow },
+                        br: { col: 11, row: imgStartRow + rowsNeeded - 1 },
+                    });
+
+                    console.log(`  ✅ 时序图 ${i + 1}/${sequenceDiagrams.length}: ${cleanName} (${rowsNeeded} 行)`);
+                } catch (imgErr) {
+                    console.warn(`  ⚠️ 时序图 ${i + 1} 嵌入失败:`, imgErr.message);
+                    const errR = ws2.addRow(['', `⚠️ 时序图嵌入失败: ${imgErr.message}`, '', '', '', '', '', '', '', '', '', '']);
+                    ws2.mergeCells(`B${errR.number}:L${errR.number}`);
+                    errR.getCell(2).font = { color: { argb: 'FFE74C3C' }, size: 10 };
+                }
+
+                // ── 间隔空行 ──
+                ws2.addRow([]);
+                ws2.addRow([]);
+            }
+
+            // 冻结标题
+            ws2.views = [{ state: 'frozen', ySplit: 3 }];
+        }
 
         // 发送文件
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

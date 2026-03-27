@@ -7,10 +7,11 @@ import {
     CheckCircle, AlertCircle, X, Trash2, Copy, Check, Eye, Table,
     Zap, Sparkles, Brain, ChevronDown, Plus, BarChart3, RefreshCw,
     FileSpreadsheet, Target, Info, Edit3, Scissors, GripVertical, Save,
-    History, LogOut, BookOpen
+    History, LogOut, BookOpen, GitBranch
 } from 'lucide-react';
 import NesmaApp from './NesmaApp';
 import HistoryPanel from './HistoryPanel';
+import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
 
 function App({ user, token, onLogout }) {
     // ═══════════ 状态管理 ═══════════
@@ -35,6 +36,10 @@ function App({ user, token, onLogout }) {
     const [userGuidelines, setUserGuidelines] = useState('');
     const [coverageResult, setCoverageResult] = useState(null);
     const [isVerifying, setIsVerifying] = useState(false);
+    const [showSequenceDiagram, setShowSequenceDiagram] = useState(false);
+    const [exportWithDiagrams, setExportWithDiagrams] = useState(false);
+    const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
+    const [diagramProgress, setDiagramProgress] = useState('');
 
     // 用户会话管理
     const [currentConversationId, setCurrentConversationId] = useState(null);
@@ -1005,19 +1010,48 @@ function App({ user, token, onLogout }) {
     const exportExcel = async () => {
         if (tableData.length === 0) { showToast('没有可导出的数据'); return; }
         try {
+            let sequenceDiagrams = null;
+
+            // 如果勾选了「附带时序图」，先在客户端生成所有时序图PNG
+            if (exportWithDiagrams) {
+                setIsGeneratingDiagrams(true);
+                setDiagramProgress('正在生成时序图...');
+                showToast('正在生成时序图，请稍候...');
+                try {
+                    sequenceDiagrams = await generateAllDiagramImages(
+                        tableData,
+                        (current, total) => {
+                            setDiagramProgress(`生成时序图 ${current}/${total}`);
+                        }
+                    );
+                    setDiagramProgress(`已生成 ${sequenceDiagrams.length} 张时序图，正在导出...`);
+                } catch (err) {
+                    console.warn('时序图生成部分失败:', err);
+                    showToast('部分时序图生成失败，将导出无时序图版本');
+                    sequenceDiagrams = null;
+                }
+            }
+
             const response = await axios.post('/api/export-excel',
-                { tableData, filename: `COSMIC拆分_${documentName || '结果'}` },
-                { responseType: 'blob' }
+                {
+                    tableData,
+                    filename: `COSMIC拆分_${documentName || '结果'}`,
+                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
+                },
+                { responseType: 'blob', timeout: 120000 }
             );
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.download = `COSMIC拆分_${documentName || '结果'}.xlsx`;
+            link.download = `COSMIC拆分_${documentName || '结果'}${sequenceDiagrams ? '_含时序图' : ''}.xlsx`;
             link.click();
             window.URL.revokeObjectURL(url);
-            showToast('Excel导出成功');
+            showToast(sequenceDiagrams ? `Excel导出成功（含 ${sequenceDiagrams.length} 张时序图）` : 'Excel导出成功');
         } catch (error) {
             showToast('导出失败: ' + error.message);
+        } finally {
+            setIsGeneratingDiagrams(false);
+            setDiagramProgress('');
         }
     };
 
@@ -1787,8 +1821,15 @@ function App({ user, token, onLogout }) {
                                                         <button className="btn btn-primary btn-sm" onClick={() => setShowTableView(true)}>
                                                             <Table size={14} /> 查看表格
                                                         </button>
-                                                        <button className="btn btn-success btn-sm" onClick={exportExcel}>
-                                                            <Download size={14} /> 导出Excel
+                                                        <button className="btn btn-success btn-sm" onClick={exportExcel} disabled={isGeneratingDiagrams}>
+                                                            {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <Download size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Excel'}
+                                                        </button>
+                                                        <label className="seq-export-toggle" title="导出Excel时附带每个功能过程的时序图">
+                                                            <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
+                                                            <GitBranch size={12} /> 附带时序图
+                                                        </label>
+                                                        <button className="btn btn-secondary btn-sm" onClick={() => setShowSequenceDiagram(true)} style={{ background: 'linear-gradient(135deg, rgba(108,92,231,0.12), rgba(59,130,246,0.12))', border: '1px solid rgba(108,92,231,0.2)', color: '#6c5ce7' }}>
+                                                            <GitBranch size={14} /> 查看时序图
                                                         </button>
                                                         <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying || isLoading}>
                                                             {isVerifying ? <Loader2 size={14} className="spinner" /> : <Target size={14} />} 覆盖度验证
@@ -1951,9 +1992,14 @@ function App({ user, token, onLogout }) {
                                     </div>
                                     <div style={{ display: 'flex', gap: 4 }}>
                                         {tableData.length > 0 && !isLoading && currentStep === 0 && (
-                                            <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying}>
-                                                {isVerifying ? <Loader2 size={13} className="spinner" /> : <Target size={13} />} 覆盖度验证
-                                            </button>
+                                            <>
+                                                <button className="btn btn-secondary btn-sm" onClick={() => setShowSequenceDiagram(true)} style={{ background: 'linear-gradient(135deg, rgba(108,92,231,0.08), rgba(59,130,246,0.08))', border: '1px solid rgba(108,92,231,0.15)', color: '#6c5ce7' }}>
+                                                    <GitBranch size={13} /> 时序图
+                                                </button>
+                                                <button className="btn btn-secondary btn-sm" onClick={verifyCoverage} disabled={isVerifying}>
+                                                    {isVerifying ? <Loader2 size={13} className="spinner" /> : <Target size={13} />} 覆盖度验证
+                                                </button>
+                                            </>
                                         )}
                                         {documentContent && !isLoading && currentStep === 0 && (
                                             <button className="btn btn-ghost btn-sm" onClick={() => fileInputRef.current?.click()}>
@@ -2095,8 +2141,15 @@ function App({ user, token, onLogout }) {
                                                 })()}
                                             </div>
                                         </div>
-                                        <button className="btn btn-success btn-sm" onClick={exportExcel}>
-                                            <Download size={14} /> 导出Excel
+                                        <button className="btn btn-success btn-sm" onClick={exportExcel} disabled={isGeneratingDiagrams}>
+                                            {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <Download size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Excel'}
+                                        </button>
+                                        <label className="seq-export-toggle" title="导出Excel时附带每个功能过程的时序图">
+                                            <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
+                                            <GitBranch size={12} /> 附带时序图
+                                        </label>
+                                        <button className="btn btn-secondary btn-sm" onClick={() => { setShowTableView(false); setShowSequenceDiagram(true); }} style={{ background: 'linear-gradient(135deg, rgba(108,92,231,0.12), rgba(59,130,246,0.12))', border: '1px solid rgba(108,92,231,0.2)', color: '#6c5ce7' }}>
+                                            <GitBranch size={14} /> 查看时序图
                                         </button>
                                         <button className="btn btn-ghost btn-icon" onClick={() => setShowTableView(false)}>
                                             <X size={18} />
@@ -2414,6 +2467,13 @@ function App({ user, token, onLogout }) {
                             </div>
                         </div>
                     )}
+
+                    {/* ═══ Sequence Diagram Modal ═══ */}
+                    <SequenceDiagram
+                        tableData={tableData}
+                        isOpen={showSequenceDiagram}
+                        onClose={() => setShowSequenceDiagram(false)}
+                    />
                 </>
             )}
         </div>
