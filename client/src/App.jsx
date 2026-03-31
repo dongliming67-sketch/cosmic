@@ -148,7 +148,7 @@ function App({ user, token, onLogout }) {
         setSelectedModel(model);
         try {
             await axios.post('/api/switch-model', { model });
-            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'deepseek-r1': 'DeepSeek-R1 深度思考', 'qwen3-coder': 'Qwen3-Coder' };
+            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'deepseek-r1': 'DeepSeek-R1 深度思考', 'qwen3-coder': 'Qwen3-Coder', 'gpt-5.1-codex-mini': '火山引擎 V3.2' };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
             showToast('切换模型失败');
@@ -156,14 +156,14 @@ function App({ user, token, onLogout }) {
     };
 
     const getUserConfig = () => {
-        const isGptModel = selectedModel === 'gpt-5.1-codex-mini';
+        const isVolcengineModel = selectedModel === 'gpt-5.1-codex-mini';
         const isBaishanModel = selectedModel === 'qwen3-coder';
-        if (isGptModel) {
+        if (isVolcengineModel) {
             return {
                 apiKey: null,
-                baseUrl: 'https://x.ainiaini.xyz/v1',
-                model: 'gpt-5.1-codex-mini',
-                provider: 'gpt'
+                baseUrl: null,  // 由后端 .env 的 VOLCENGINE_BASE_URL 控制
+                model: 'gpt-5.1-codex-mini',  // 后端映射到火山引擎 DeepSeek-V3.2
+                provider: 'volcengine'
             };
         }
         if (isBaishanModel) {
@@ -1610,8 +1610,8 @@ function App({ user, token, onLogout }) {
                             >
                                 <span className="model-option-dot" />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>GPT-5.1-Codex</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>Mini · OpenAI</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>火山引擎 🌋</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>DeepSeek-V3.2 · 火山方舟</div>
                                 </div>
                             </button>
                         </div>

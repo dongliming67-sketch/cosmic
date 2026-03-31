@@ -9,20 +9,20 @@ const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v3-2-251
 
 // 模型映射表
 const MODEL_MAP = {
-    'deepseek-v3': VOLCENGINE_MODEL_NAME,          // → 火山引擎 DeepSeek-V3.2
-    'deepseek-v3.2': VOLCENGINE_MODEL_NAME,         // → 火山引擎 DeepSeek-V3.2
+    'deepseek-v3': 'deepseek-v3',               // → 心流平台 (iflow)
+    'deepseek-v3.2': 'deepseek-v3',              // → 心流平台 (iflow)
     'deepseek-r1': 'deepseek-r1',              // 深度思考模式
     'deepseek-reasoner': 'deepseek-r1',         // 别名
     'qwen3-coder': 'DeepSeek-R1-0528-Qwen3-8B',   // → 白山云
     'qwen3-coder-plus': 'DeepSeek-R1-0528-Qwen3-8B', // → 白山云
-    'gpt-5.1-codex-mini': 'gpt-5.1-codex-mini',
+    'gpt-5.1-codex-mini': VOLCENGINE_MODEL_NAME,   // → 火山引擎 DeepSeek-V3.2
     // 兼容旧版大写名称
-    'DeepSeek-V3-671B': VOLCENGINE_MODEL_NAME,
+    'DeepSeek-V3-671B': 'deepseek-v3',             // → 心流平台 (iflow)
     'Qwen3-Coder-Plus': 'DeepSeek-R1-0528-Qwen3-8B'
 };
 
-// GPT平台模型列表（使用不同的API密钥和基础URL）
-const GPT_MODELS = new Set(['gpt-5.1-codex-mini']);
+// GPT平台模型列表（已废弃，原GPT按钮改为火山引擎）
+const GPT_MODELS = new Set([]);
 
 // 白山云平台模型列表
 const BAISHAN_MODELS = new Set(['DeepSeek-R1-0528-Qwen3-8B']);
@@ -30,8 +30,8 @@ const BAISHAN_MODELS = new Set(['DeepSeek-R1-0528-Qwen3-8B']);
 // 火山引擎平台模型列表
 const VOLCENGINE_MODELS = new Set([VOLCENGINE_MODEL_NAME]);
 
-// 必须使用流式调用的模型（R1 思考链很长，流式更稳定；GPT平台也需要流式）
-const STREAM_ONLY_MODELS = new Set(['gpt-5.1-codex-mini', 'deepseek-r1', 'DeepSeek-R1-0528-Qwen3-8B']);
+// 必须使用流式调用的模型（R1 思考链很长，流式更稳定）
+const STREAM_ONLY_MODELS = new Set(['deepseek-r1', 'DeepSeek-R1-0528-Qwen3-8B']);
 
 /**
  * 获取 OpenAI 兼容客户端（指向心流平台）
