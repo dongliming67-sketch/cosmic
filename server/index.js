@@ -1874,9 +1874,9 @@ function resetReuseLevelCounter() {
 const FP_WEIGHTS = {
     ILF: { '低': 7, '中': 10, '高': 15 },
     EIF: { '低': 5, '中': 7, '高': 10 },
-    EI:  { '低': 3, '中': 4, '高': 6 },
-    EO:  { '低': 4, '中': 5, '高': 7 },
-    EQ:  { '低': 3, '中': 4, '高': 6 },
+    EI: { '低': 3, '中': 4, '高': 6 },
+    EO: { '低': 4, '中': 5, '高': 7 },
+    EQ: { '低': 3, '中': 4, '高': 6 },
 };
 
 /**
@@ -2141,7 +2141,7 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                     m.level3?.includes(chapterName) ||
                     chapterName.includes(m.level1?.split(' ').pop() || '') ||
                     chapterName.includes(m.level2?.split(' ').pop() || '')
-                  )
+                )
                 : moduleStructure.modules;
 
             activeMods = relevantModules.length > 0 ? relevantModules : moduleStructure.modules;

@@ -10,28 +10,49 @@ const MODEL_MAP = {
     'deepseek-v3.2': 'deepseek-v3.2',
     'deepseek-r1': 'deepseek-r1',              // 深度思考模式
     'deepseek-reasoner': 'deepseek-r1',         // 别名
-    'qwen3-coder': 'qwen3-coder-plus',
-    'qwen3-coder-plus': 'qwen3-coder-plus',
+    'qwen3-coder': 'DeepSeek-R1-0528-Qwen3-8B',   // → 白山云
+    'qwen3-coder-plus': 'DeepSeek-R1-0528-Qwen3-8B', // → 白山云
     'gpt-5.1-codex-mini': 'gpt-5.1-codex-mini',
     // 兼容旧版大写名称
     'DeepSeek-V3-671B': 'deepseek-v3',
-    'Qwen3-Coder-Plus': 'qwen3-coder-plus'
+    'Qwen3-Coder-Plus': 'DeepSeek-R1-0528-Qwen3-8B'
 };
 
 // GPT平台模型列表（使用不同的API密钥和基础URL）
 const GPT_MODELS = new Set(['gpt-5.1-codex-mini']);
 
+// 白山云平台模型列表
+const BAISHAN_MODELS = new Set(['DeepSeek-R1-0528-Qwen3-8B']);
+
 // 必须使用流式调用的模型（R1 思考链很长，流式更稳定；GPT平台也需要流式）
-const STREAM_ONLY_MODELS = new Set(['gpt-5.1-codex-mini', 'deepseek-r1']);
+const STREAM_ONLY_MODELS = new Set(['gpt-5.1-codex-mini', 'deepseek-r1', 'DeepSeek-R1-0528-Qwen3-8B']);
 
 /**
  * 获取 OpenAI 兼容客户端（指向心流平台）
  */
 function createClient(apiKey, baseUrl, model) {
-    // 如果是GPT平台模型，使用GPT平台的密钥和URL
+    // 根据模型选择对应平台的密钥和URL
     const isGptModel = model && GPT_MODELS.has(model);
-    const key = apiKey || (isGptModel ? process.env.GPT_API_KEY : process.env.IFLOW_API_KEY);
-    const url = baseUrl || (isGptModel ? (process.env.GPT_BASE_URL || 'https://x.ainiaini.xyz/v1') : (process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1'));
+    const isBaishanModel = model && BAISHAN_MODELS.has(model);
+    let key, url;
+    if (apiKey) {
+        key = apiKey;
+    } else if (isGptModel) {
+        key = process.env.GPT_API_KEY;
+    } else if (isBaishanModel) {
+        key = process.env.BAISHAN_API_KEY;
+    } else {
+        key = process.env.IFLOW_API_KEY;
+    }
+    if (baseUrl) {
+        url = baseUrl;
+    } else if (isGptModel) {
+        url = process.env.GPT_BASE_URL || 'https://x.ainiaini.xyz/v1';
+    } else if (isBaishanModel) {
+        url = process.env.BAISHAN_BASE_URL || 'https://api.edgefn.net/v1';
+    } else {
+        url = process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1';
+    }
     return new OpenAI({ apiKey: key, baseURL: url });
 }
 
@@ -94,7 +115,7 @@ async function callAI(options) {
 
         let fullContent = '';
         let thinkingContent = '';
-        const isR1 = modelName === 'deepseek-r1';
+        const isR1 = modelName === 'deepseek-r1' || modelName === 'DeepSeek-R1-0528-Qwen3-8B';
         for await (const chunk of completion) {
             const delta = chunk.choices[0]?.delta;
             // R1 模型：reasoning_content 是思考链，content 是最终答案

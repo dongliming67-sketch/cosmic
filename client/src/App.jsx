@@ -148,7 +148,7 @@ function App({ user, token, onLogout }) {
         setSelectedModel(model);
         try {
             await axios.post('/api/switch-model', { model });
-            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'deepseek-r1': 'DeepSeek-R1 深度思考', 'qwen3-coder': 'Qwen3-Coder-Plus' };
+            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'deepseek-r1': 'DeepSeek-R1 深度思考', 'qwen3-coder': 'Qwen3-Coder' };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
             showToast('切换模型失败');
@@ -157,6 +157,7 @@ function App({ user, token, onLogout }) {
 
     const getUserConfig = () => {
         const isGptModel = selectedModel === 'gpt-5.1-codex-mini';
+        const isBaishanModel = selectedModel === 'qwen3-coder';
         if (isGptModel) {
             return {
                 apiKey: null,
@@ -165,7 +166,15 @@ function App({ user, token, onLogout }) {
                 provider: 'gpt'
             };
         }
-        const modelMap = { 'deepseek-v3': 'deepseek-v3', 'deepseek-r1': 'deepseek-r1', 'qwen3-coder': 'qwen3-coder-plus' };
+        if (isBaishanModel) {
+            return {
+                apiKey: null,
+                baseUrl: null,  // 由后端 .env 控制
+                model: 'qwen3-coder',
+                provider: 'baishan'
+            };
+        }
+        const modelMap = { 'deepseek-v3': 'deepseek-v3', 'deepseek-r1': 'deepseek-r1' };
         return {
             apiKey: null,
             baseUrl: 'https://apis.iflow.cn/v1',
@@ -458,8 +467,7 @@ function App({ user, token, onLogout }) {
                 }
 
                 const modSummary = recognizedModules.modules.map((m, i) =>
-                    `${i + 1}. **${m.level3}**（${m.level1} > ${m.level2}）: ${
-                        m.businessObjects?.join('、') || '若干业务对象'
+                    `${i + 1}. **${m.level3}**（${m.level1} > ${m.level2}）: ${m.businessObjects?.join('、') || '若干业务对象'
                     }${generatedPlan ? `，目标 **${generatedPlan[i]?.target || '?'}** 个功能过程` : `，预估 ~${m.estimatedFunctions || '?'} 个功能过程`}`
                 ).join('\n');
 
@@ -2119,7 +2127,7 @@ function App({ user, token, onLogout }) {
                                                 功能过程: <span className="table-stat-value">{[...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))].length}</span>
                                             </div>
                                             <div className="table-stat">
-                                                CFP: <span className="table-stat-value" style={{color: 'var(--accent-violet)'}}>{tableData.length}</span>
+                                                CFP: <span className="table-stat-value" style={{ color: 'var(--accent-violet)' }}>{tableData.length}</span>
                                             </div>
                                             {['E', 'R', 'W', 'X'].map(dmt => (
                                                 <div key={dmt} className="table-stat">
