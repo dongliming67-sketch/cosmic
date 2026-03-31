@@ -4,17 +4,20 @@
 
 const OpenAI = require('openai');
 
+// 火山引擎模型名称
+const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v3-2-251201';
+
 // 模型映射表
 const MODEL_MAP = {
-    'deepseek-v3': 'deepseek-v3',
-    'deepseek-v3.2': 'deepseek-v3.2',
+    'deepseek-v3': VOLCENGINE_MODEL_NAME,          // → 火山引擎 DeepSeek-V3.2
+    'deepseek-v3.2': VOLCENGINE_MODEL_NAME,         // → 火山引擎 DeepSeek-V3.2
     'deepseek-r1': 'deepseek-r1',              // 深度思考模式
     'deepseek-reasoner': 'deepseek-r1',         // 别名
     'qwen3-coder': 'DeepSeek-R1-0528-Qwen3-8B',   // → 白山云
     'qwen3-coder-plus': 'DeepSeek-R1-0528-Qwen3-8B', // → 白山云
     'gpt-5.1-codex-mini': 'gpt-5.1-codex-mini',
     // 兼容旧版大写名称
-    'DeepSeek-V3-671B': 'deepseek-v3',
+    'DeepSeek-V3-671B': VOLCENGINE_MODEL_NAME,
     'Qwen3-Coder-Plus': 'DeepSeek-R1-0528-Qwen3-8B'
 };
 
@@ -23,6 +26,9 @@ const GPT_MODELS = new Set(['gpt-5.1-codex-mini']);
 
 // 白山云平台模型列表
 const BAISHAN_MODELS = new Set(['DeepSeek-R1-0528-Qwen3-8B']);
+
+// 火山引擎平台模型列表
+const VOLCENGINE_MODELS = new Set([VOLCENGINE_MODEL_NAME]);
 
 // 必须使用流式调用的模型（R1 思考链很长，流式更稳定；GPT平台也需要流式）
 const STREAM_ONLY_MODELS = new Set(['gpt-5.1-codex-mini', 'deepseek-r1', 'DeepSeek-R1-0528-Qwen3-8B']);
@@ -34,9 +40,12 @@ function createClient(apiKey, baseUrl, model) {
     // 根据模型选择对应平台的密钥和URL
     const isGptModel = model && GPT_MODELS.has(model);
     const isBaishanModel = model && BAISHAN_MODELS.has(model);
+    const isVolcengineModel = model && VOLCENGINE_MODELS.has(model);
     let key, url;
     if (apiKey) {
         key = apiKey;
+    } else if (isVolcengineModel) {
+        key = process.env.VOLCENGINE_API_KEY;
     } else if (isGptModel) {
         key = process.env.GPT_API_KEY;
     } else if (isBaishanModel) {
@@ -46,6 +55,8 @@ function createClient(apiKey, baseUrl, model) {
     }
     if (baseUrl) {
         url = baseUrl;
+    } else if (isVolcengineModel) {
+        url = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
     } else if (isGptModel) {
         url = process.env.GPT_BASE_URL || 'https://x.ainiaini.xyz/v1';
     } else if (isBaishanModel) {
