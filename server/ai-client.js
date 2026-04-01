@@ -5,7 +5,7 @@
 const OpenAI = require('openai');
 
 // 火山引擎模型名称
-const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v3-2-251201';
+const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v3-250324';
 
 // 模型映射表
 const MODEL_MAP = {
@@ -15,7 +15,7 @@ const MODEL_MAP = {
     'deepseek-reasoner': 'deepseek-r1',         // 别名
     'qwen3-coder': 'DeepSeek-R1-0528-Qwen3-8B',   // → 白山云
     'qwen3-coder-plus': 'DeepSeek-R1-0528-Qwen3-8B', // → 白山云
-    'gpt-5.1-codex-mini': VOLCENGINE_MODEL_NAME,   // → 火山引擎 DeepSeek-V3.2
+    'gpt-5.1-codex-mini': VOLCENGINE_MODEL_NAME,   // → 火山引擎 DeepSeek-V3
     // 兼容旧版大写名称
     'DeepSeek-V3-671B': 'deepseek-v3',             // → 心流平台 (iflow)
     'Qwen3-Coder-Plus': 'DeepSeek-R1-0528-Qwen3-8B'

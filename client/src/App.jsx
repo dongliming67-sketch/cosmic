@@ -94,6 +94,9 @@ function App({ user, token, onLogout }) {
     const [quantityPlan, setQuantityPlan] = useState(null); // 每模块目标数量规划
     const [showQuantityPlan, setShowQuantityPlan] = useState(false); // 数量规划弹窗
 
+    // 失败批次重试
+    const [failedBatchInfo, setFailedBatchInfo] = useState([]); // [{index, functions, texts, names, error}]
+
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
     const dropZoneRef = useRef(null);
@@ -148,7 +151,7 @@ function App({ user, token, onLogout }) {
         setSelectedModel(model);
         try {
             await axios.post('/api/switch-model', { model });
-            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'deepseek-r1': 'DeepSeek-R1 深度思考', 'qwen3-coder': 'Qwen3-Coder', 'gpt-5.1-codex-mini': '火山引擎 V3.2' };
+            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'deepseek-r1': 'DeepSeek-R1 深度思考', 'qwen3-coder': 'Qwen3-Coder', 'gpt-5.1-codex-mini': '优先使用 V3' };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
             showToast('切换模型失败');
@@ -162,7 +165,7 @@ function App({ user, token, onLogout }) {
             return {
                 apiKey: null,
                 baseUrl: null,  // 由后端 .env 的 VOLCENGINE_BASE_URL 控制
-                model: 'gpt-5.1-codex-mini',  // 后端映射到火山引擎 DeepSeek-V3.2
+                model: 'gpt-5.1-codex-mini',  // 后端映射到火山引擎 DeepSeek-V3
                 provider: 'volcengine'
             };
         }
@@ -695,6 +698,7 @@ function App({ user, token, onLogout }) {
         let allTableData = [];
         let completedBatches = 0;
         let failedBatches = [];
+        setFailedBatchInfo([]); // 清空上次的失败记录
 
         try {
             for (let bi = 0; bi < totalBatches; bi++) {
@@ -739,7 +743,13 @@ function App({ user, token, onLogout }) {
 
                     const batchErrMsg = batchError.response?.data?.error || batchError.message;
                     console.error(`批次 ${bi + 1} 失败:`, batchErrMsg);
-                    failedBatches.push({ index: bi, names: batchFuncNames, error: batchErrMsg });
+                    failedBatches.push({
+                        index: bi,
+                        names: batchFuncNames,
+                        error: batchErrMsg,
+                        functions: batch.functions,  // 保存完整的功能过程数据
+                        texts: batch.texts            // 保存拆分用文本
+                    });
 
                     // 如果已有部分数据，继续下一批（容错）
                     if (allTableData.length > 0) {
@@ -786,8 +796,10 @@ function App({ user, token, onLogout }) {
             summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
 
             if (failedBatches.length > 0) {
-                summaryContent += `\n\n⚠️ 以下批次拆分失败，可点击**「重新COSMIC拆分」**重试：\n`;
+                summaryContent += `\n\n⚠️ 以下批次拆分失败，可点击**「重试失败批次」**单独补充：\n`;
                 summaryContent += failedBatches.map(fb => `- 批次 ${fb.index + 1}: ${fb.names} (${fb.error})`).join('\n');
+                // 保存失败批次的完整信息到 state，供重试使用
+                setFailedBatchInfo(failedBatches);
             }
 
             setMessages(prev => {
@@ -801,6 +813,10 @@ function App({ user, token, onLogout }) {
             setCurrentStep(0);
         } catch (error) {
             if (error.name === 'AbortError' || error.name === 'CanceledError') return;
+            // 保存已累积的失败批次信息
+            if (failedBatches.length > 0) {
+                setFailedBatchInfo(failedBatches);
+            }
             // 即使出错，如果已有部分数据也保留
             if (allTableData.length > 0) {
                 const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
@@ -808,13 +824,159 @@ function App({ user, token, onLogout }) {
                     const filtered = prev.filter(m => !m.content.startsWith('🔄'));
                     return [...filtered, {
                         role: 'assistant',
-                        content: `⚠️ **拆分部分完成**（${completedBatches}/${totalBatches} 批次成功，后续批次出错: ${error.response?.data?.error || error.message}）\n\n已完成部分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n\n💡 已完成的数据已保留，可点击**「重新COSMIC拆分」**继续。`,
+                        content: `⚠️ **拆分部分完成**（${completedBatches}/${totalBatches} 批次成功，后续批次出错: ${error.response?.data?.error || error.message}）\n\n已完成部分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n\n💡 已完成的数据已保留${failedBatches.length > 0 ? '，可点击**「重试失败批次」**补充拆分丢失的功能过程。' : '，可点击**「重新COSMIC拆分」**继续。'}`,
                         showActions: true
                     }];
                 });
             } else {
                 setMessages(prev => [...prev, { role: 'assistant', content: `❌ COSMIC拆分失败: ${error.response?.data?.error || error.message}` }]);
             }
+            setCurrentStep(0);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // ═══════════ 重试失败批次（仅补充拆分失败的功能过程） ═══════════
+    const retryFailedBatches = async () => {
+        if (failedBatchInfo.length === 0) { showToast('没有需要重试的失败批次'); return; }
+
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        abortControllerRef.current = new AbortController();
+        const signal = abortControllerRef.current.signal;
+
+        setIsLoading(true);
+        setCurrentStep(4);
+
+        // 收集所有失败批次里的功能过程
+        const retryBatches = failedBatchInfo.map((fb, idx) => ({
+            functions: fb.functions,
+            texts: fb.texts,
+            originalIndex: fb.index,
+            names: fb.names
+        }));
+
+        const totalRetry = retryBatches.length;
+        const totalFuncCount = retryBatches.reduce((s, b) => s + b.functions.length, 0);
+
+        setMessages(prev => [...prev, {
+            role: 'system',
+            content: `🔄 **重试失败批次**\n共 **${totalFuncCount}** 个功能过程（${totalRetry} 个批次），正在补充拆分...`
+        }]);
+
+        let allTableData = [...tableData]; // 保留已有数据
+        let completedRetry = 0;
+        let stillFailed = [];
+
+        try {
+            for (let ri = 0; ri < totalRetry; ri++) {
+                if (signal.aborted) return;
+
+                const batch = retryBatches[ri];
+
+                setMessages(prev => {
+                    const filtered = prev.filter(m => !m.content.startsWith('🔄 **重试批次'));
+                    return [...filtered, {
+                        role: 'system',
+                        content: `🔄 **重试批次 ${ri + 1}/${totalRetry}**（原批次 ${batch.originalIndex + 1}）| 正在拆分：${batch.names}\n\n进度：${completedRetry}/${totalRetry} 完成`
+                    }];
+                });
+
+                try {
+                    const res = await axios.post('/api/cosmic-split-batch', {
+                        batchFunctions: batch.texts,
+                        batchIndex: batch.originalIndex,
+                        totalBatches: totalRetry,
+                        documentContent: documentContent.substring(0, 6000),
+                        userGuidelines,
+                        previousResults: allTableData,
+                        userConfig: getUserConfig()
+                    }, { signal });
+
+                    if (res.data.success) {
+                        const newData = res.data.tableData || [];
+                        if (newData.length > 0) {
+                            const deduped = deduplicateData(allTableData, newData);
+                            if (deduped.length > 0) {
+                                allTableData = [...allTableData, ...deduped];
+                                setTableData(allTableData);
+                            }
+                        }
+                        completedRetry++;
+                    }
+                } catch (retryError) {
+                    if (retryError.name === 'AbortError' || retryError.name === 'CanceledError' || signal.aborted) return;
+
+                    const errMsg = retryError.response?.data?.error || retryError.message;
+                    console.error(`重试批次 ${ri + 1}（原批次 ${batch.originalIndex + 1}）失败:`, errMsg);
+                    stillFailed.push({
+                        index: batch.originalIndex,
+                        names: batch.names,
+                        error: errMsg,
+                        functions: batch.functions,
+                        texts: batch.texts
+                    });
+
+                    setMessages(prev => {
+                        const filtered = prev.filter(m => !m.content.startsWith('🔄 **重试批次'));
+                        return [...filtered, {
+                            role: 'system',
+                            content: `⚠️ **重试批次 ${ri + 1}（原批次 ${batch.originalIndex + 1}）再次失败**: ${errMsg}\n\n继续处理...`
+                        }];
+                    });
+
+                    // 失败后等更久
+                    try {
+                        await new Promise((resolve, reject) => {
+                            const t = setTimeout(resolve, 10000);
+                            signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                        });
+                    } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                    continue;
+                }
+
+                // 批次间等待
+                if (ri < totalRetry - 1) {
+                    try {
+                        await new Promise((resolve, reject) => {
+                            const t = setTimeout(resolve, 5000);
+                            signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                        });
+                    } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                }
+            }
+
+            // 更新 failedBatchInfo
+            setFailedBatchInfo(stillFailed);
+
+            // 汇总
+            const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+            let summaryContent = completedRetry === totalRetry
+                ? `✅ **失败批次全部重试成功！**\n\n`
+                : `⚠️ **失败批次重试完成**（${completedRetry}/${totalRetry} 成功）\n\n`;
+            summaryContent += `📊 当前合计：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
+            summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
+
+            if (stillFailed.length > 0) {
+                summaryContent += `\n\n⚠️ 仍有 ${stillFailed.length} 个批次失败，可再次点击**「重试失败批次」**：\n`;
+                summaryContent += stillFailed.map(fb => `- 批次 ${fb.index + 1}: ${fb.names}`).join('\n');
+            }
+
+            setMessages(prev => {
+                const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                return [...filtered, {
+                    role: 'assistant',
+                    content: summaryContent,
+                    showActions: true
+                }];
+            });
+            setCurrentStep(0);
+        } catch (error) {
+            if (error.name === 'AbortError' || error.name === 'CanceledError') return;
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `❌ 重试失败: ${error.response?.data?.error || error.message}`
+            }]);
             setCurrentStep(0);
         } finally {
             setIsLoading(false);
@@ -1081,6 +1243,7 @@ function App({ user, token, onLogout }) {
         setIsWaitingForAnalysis(false);
         setModuleStructure(null);
         setQuantityPlan(null);
+        setFailedBatchInfo([]);
     };
 
     const stopAnalysis = () => {
@@ -1610,8 +1773,8 @@ function App({ user, token, onLogout }) {
                             >
                                 <span className="model-option-dot" />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>火山引擎 🌋</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>DeepSeek-V3.2 · 火山方舟</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>优先使用 🌋</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>DeepSeek-V3 · 最最推荐</div>
                                 </div>
                             </button>
                         </div>
@@ -1964,6 +2127,16 @@ function App({ user, token, onLogout }) {
                                                             <Sparkles size={14} /> 重新COSMIC拆分
                                                         </button>
                                                     </>
+                                                )}
+                                                {failedBatchInfo.length > 0 && (
+                                                    <button
+                                                        className="btn btn-primary"
+                                                        onClick={retryFailedBatches}
+                                                        disabled={isLoading}
+                                                        style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)', border: 'none' }}
+                                                    >
+                                                        <RefreshCw size={14} /> 重试失败批次 ({failedBatchInfo.reduce((s, b) => s + b.functions.length, 0)}个功能)
+                                                    </button>
                                                 )}
                                             </>
                                         )}
