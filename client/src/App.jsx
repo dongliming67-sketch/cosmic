@@ -1225,6 +1225,56 @@ function App({ user, token, onLogout }) {
         }
     };
 
+    // ═══════════ 导出Word文档（借鉴omega-cosmic的DocBuilder） ═══════════
+    const exportWord = async () => {
+        if (tableData.length === 0) { showToast('没有可导出的数据'); return; }
+        try {
+            let sequenceDiagrams = null;
+
+            // 如果勾选了「附带时序图」，先在客户端生成所有时序图PNG
+            if (exportWithDiagrams) {
+                setIsGeneratingDiagrams(true);
+                setDiagramProgress('正在生成时序图...');
+                showToast('正在生成时序图，请稍候...');
+                try {
+                    sequenceDiagrams = await generateAllDiagramImages(
+                        tableData,
+                        (current, total) => {
+                            setDiagramProgress(`生成时序图 ${current}/${total}`);
+                        }
+                    );
+                    setDiagramProgress(`已生成 ${sequenceDiagrams.length} 张时序图，正在生成Word...`);
+                } catch (err) {
+                    console.warn('时序图生成部分失败:', err);
+                    showToast('部分时序图生成失败，将导出无时序图版本');
+                    sequenceDiagrams = null;
+                }
+            }
+
+            const response = await axios.post('/api/export-word',
+                {
+                    tableData,
+                    filename: `COSMIC功能规格说明书_${documentName || '结果'}`,
+                    documentName: documentName || '',
+                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
+                },
+                { responseType: 'blob', timeout: 120000 }
+            );
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `COSMIC功能规格说明书_${documentName || '结果'}${sequenceDiagrams ? '_含时序图' : ''}.docx`;
+            link.click();
+            window.URL.revokeObjectURL(url);
+            showToast(sequenceDiagrams ? `Word导出成功（含 ${sequenceDiagrams.length} 张时序图）` : 'Word文档导出成功');
+        } catch (error) {
+            showToast('导出Word失败: ' + error.message);
+        } finally {
+            setIsGeneratingDiagrams(false);
+            setDiagramProgress('');
+        }
+    };
+
     const copyContent = (content) => {
         navigator.clipboard.writeText(content);
         setCopied(true);
@@ -1879,6 +1929,9 @@ function App({ user, token, onLogout }) {
                                         <button className="btn btn-success btn-sm" onClick={exportExcel}>
                                             <Download size={14} /> 导出Excel
                                         </button>
+                                        <button className="btn btn-sm" onClick={exportWord} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为Word功能规格说明书">
+                                            <FileText size={14} /> 导出Word
+                                        </button>
                                     </>
                                 )}
                                 <button className="btn btn-secondary btn-sm" onClick={handleManualSave} title="保存当前分析">
@@ -2325,7 +2378,10 @@ function App({ user, token, onLogout }) {
                                         <button className="btn btn-success btn-sm" onClick={exportExcel} disabled={isGeneratingDiagrams}>
                                             {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <Download size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Excel'}
                                         </button>
-                                        <label className="seq-export-toggle" title="导出Excel时附带每个功能过程的时序图">
+                                        <button className="btn btn-sm" onClick={exportWord} disabled={isGeneratingDiagrams} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为Word功能规格说明书">
+                                            {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Word'}
+                                        </button>
+                                        <label className="seq-export-toggle" title="导出时附带每个功能过程的时序图">
                                             <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
                                             <GitBranch size={12} /> 附带时序图
                                         </label>

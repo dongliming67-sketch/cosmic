@@ -7,6 +7,7 @@ const cors = require('cors');
 const multer = require('multer');
 const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
+const docx = require('docx');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
@@ -1743,6 +1744,340 @@ app.post('/api/export-excel', async (req, res) => {
     } catch (error) {
         console.error('导出Excel失败:', error);
         res.status(500).json({ error: '导出Excel失败: ' + error.message });
+    }
+});
+
+// ═══════════════════════ 导出Word（借鉴omega-cosmic DocBuilder） ═══════════════════════
+
+app.post('/api/export-word', async (req, res) => {
+    try {
+        const { tableData, filename = 'COSMIC功能规格说明书', sequenceDiagrams, documentName } = req.body;
+
+        if (!tableData || tableData.length === 0) {
+            return res.status(400).json({ error: '没有可导出的数据' });
+        }
+
+        console.log(`📝 开始生成Word文档，共 ${tableData.length} 行数据...`);
+
+        // ── 1. 将 tableData 按功能过程分组 ──
+        const functionGroups = [];
+        let currentGroup = null;
+        let currentFuncUser = '';
+        let currentTrigger = '';
+
+        for (const row of tableData) {
+            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                if (row.functionalUser) currentFuncUser = row.functionalUser;
+                if (row.triggerEvent) currentTrigger = row.triggerEvent;
+                currentGroup = {
+                    functionalProcess: row.functionalProcess,
+                    functionalUser: currentFuncUser,
+                    triggerEvent: currentTrigger,
+                    // 从功能过程名称提取章节标记 [xxx]
+                    chapter: (row.functionalProcess.match(/\[(.+?)\]/) || [])[1] || '',
+                    cleanName: row.functionalProcess.replace(/\[.*?\]\s*/, '').trim(),
+                    rows: [row]
+                };
+                functionGroups.push(currentGroup);
+            } else if (currentGroup) {
+                currentGroup.rows.push(row);
+            }
+        }
+
+        // ── 2. 按章节（一级模块）分组 ──
+        const chapterMap = new Map();
+        for (const group of functionGroups) {
+            const chapter = group.chapter || '功能需求';
+            if (!chapterMap.has(chapter)) chapterMap.set(chapter, []);
+            chapterMap.get(chapter).push(group);
+        }
+
+        // ── 3. 构建时序图映射 ──
+        const diagramMap = new Map();
+        if (sequenceDiagrams && sequenceDiagrams.length > 0) {
+            for (const diag of sequenceDiagrams) {
+                if (diag.processName) {
+                    diagramMap.set(diag.processName, diag);
+                }
+            }
+        }
+
+        // ── 4. 构建 Word 文档 ──
+        const { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, BorderStyle, TableOfContents } = docx;
+
+        const docChildren = [];
+
+        // 文档标题
+        docChildren.push(
+            new Paragraph({
+                children: [new TextRun({ text: documentName || filename, bold: true, size: 36, font: '微软雅黑' })],
+                heading: HeadingLevel.TITLE,
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 400 }
+            })
+        );
+
+        // 副标题
+        const uniqueFuncs = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
+        const totalCfp = tableData.length;
+        docChildren.push(
+            new Paragraph({
+                children: [new TextRun({
+                    text: `软件评估功能点拆分报告  |  共 ${uniqueFuncs.length} 个功能过程  |  ${totalCfp} CFP`,
+                    size: 22, font: '微软雅黑', color: '666666'
+                })],
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 600 }
+            })
+        );
+
+        // ERWX 统计概览
+        const eCount = tableData.filter(r => r.dataMovementType === 'E').length;
+        const rCount = tableData.filter(r => r.dataMovementType === 'R').length;
+        const wCount = tableData.filter(r => r.dataMovementType === 'W').length;
+        const xCount = tableData.filter(r => r.dataMovementType === 'X').length;
+        docChildren.push(
+            new Paragraph({
+                children: [new TextRun({
+                    text: `数据移动统计：E(进入)×${eCount}  R(读取)×${rCount}  W(写入)×${wCount}  X(退出)×${xCount}`,
+                    size: 20, font: '微软雅黑', color: '888888'
+                })],
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 400 }
+            })
+        );
+
+        // 分隔线
+        docChildren.push(new Paragraph({
+            children: [new TextRun({ text: '' })],
+            border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '6C5CE7' } },
+            spacing: { after: 400 }
+        }));
+
+        // ── 5. 逐章节 → 逐功能过程生成内容 ──
+        let chapterIndex = 0;
+        for (const [chapterName, groups] of chapterMap) {
+            chapterIndex++;
+
+            // Heading 1: 章节/一级模块 (对应 Java 的 addModule)
+            docChildren.push(
+                new Paragraph({
+                    children: [new TextRun({
+                        text: `${chapterIndex}  功能需求（${chapterName}）`,
+                        bold: true, size: 32, font: '微软雅黑', color: '1A1A2E'
+                    })],
+                    heading: HeadingLevel.HEADING_1,
+                    spacing: { before: 600, after: 300 }
+                })
+            );
+
+            for (let fi = 0; fi < groups.length; fi++) {
+                const group = groups[fi];
+                const funcNumber = `${chapterIndex}.${fi + 1}`;
+
+                // Heading 2: 功能过程名称(新增) (对应 Java 的 addFuncPoint)
+                docChildren.push(
+                    new Paragraph({
+                        children: [new TextRun({
+                            text: `${funcNumber}  ${group.cleanName}（新增）`,
+                            bold: true, size: 28, font: '微软雅黑', color: '2D3436'
+                        })],
+                        heading: HeadingLevel.HEADING_2,
+                        spacing: { before: 400, after: 200 }
+                    })
+                );
+
+                // 功能用户 & 触发事件
+                docChildren.push(
+                    new Paragraph({
+                        children: [
+                            new TextRun({ text: '功能用户：', bold: true, size: 21, font: '微软雅黑', color: '636E72' }),
+                            new TextRun({ text: group.functionalUser || '未指定', size: 21, font: '微软雅黑' }),
+                            new TextRun({ text: '    触发事件：', bold: true, size: 21, font: '微软雅黑', color: '636E72' }),
+                            new TextRun({ text: group.triggerEvent || '未指定', size: 21, font: '微软雅黑' })
+                        ],
+                        spacing: { after: 200 }
+                    })
+                );
+
+                // ── Heading 3: 关键时序图/业务逻辑图 (对应 Java 的 addFuncDetial) ──
+                docChildren.push(
+                    new Paragraph({
+                        children: [new TextRun({
+                            text: `${funcNumber}.1  关键时序图/业务逻辑图`,
+                            bold: true, size: 24, font: '微软雅黑', color: '6C5CE7'
+                        })],
+                        heading: HeadingLevel.HEADING_3,
+                        spacing: { before: 300, after: 200 }
+                    })
+                );
+
+                // 嵌入时序图 (对应 Java 的 addPNGImage)
+                const diagram = diagramMap.get(group.functionalProcess);
+                if (diagram && diagram.imageBase64) {
+                    try {
+                        const imgBuffer = Buffer.from(diagram.imageBase64, 'base64');
+                        const imgWidth = diagram.width || 800;
+                        const imgHeight = diagram.height || 400;
+                        // 最大宽度 550px，按比例缩放
+                        const maxWidth = 550;
+                        const scale = Math.min(1, maxWidth / imgWidth);
+                        const displayWidth = Math.round(imgWidth * scale);
+                        const displayHeight = Math.round(imgHeight * scale);
+
+                        docChildren.push(
+                            new Paragraph({
+                                children: [new ImageRun({
+                                    data: imgBuffer,
+                                    transformation: { width: displayWidth, height: displayHeight },
+                                    type: 'png'
+                                })],
+                                alignment: AlignmentType.CENTER,
+                                spacing: { after: 200 }
+                            })
+                        );
+                    } catch (imgErr) {
+                        console.warn(`  ⚠️ 时序图嵌入失败 (${group.cleanName}):`, imgErr.message);
+                        docChildren.push(
+                            new Paragraph({
+                                children: [new TextRun({ text: `[时序图嵌入失败: ${imgErr.message}]`, color: 'E74C3C', size: 20, font: '微软雅黑' })],
+                                spacing: { after: 200 }
+                            })
+                        );
+                    }
+                } else {
+                    docChildren.push(
+                        new Paragraph({
+                            children: [new TextRun({ text: '（时序图未生成，可在导出时勾选"附带时序图"重新导出）', color: '999999', size: 20, font: '微软雅黑', italics: true })],
+                            spacing: { after: 200 }
+                        })
+                    );
+                }
+
+                // "本时序图步骤如下：" (对应 Java 的 addContent)
+                docChildren.push(
+                    new Paragraph({
+                        children: [new TextRun({ text: '本时序图步骤如下：', bold: true, size: 21, font: '微软雅黑' })],
+                        spacing: { after: 100 }
+                    })
+                );
+
+                // 列出每个子过程步骤 (对应 Java 的 lambda$null$3 中的 "%d) %s(%s)")
+                let stepIndex = 0;
+                for (const row of group.rows) {
+                    stepIndex++;
+                    const dmtLabels = { E: '进入', R: '读取', W: '写入', X: '退出' };
+                    const dmtLabel = dmtLabels[row.dataMovementType] || row.dataMovementType;
+                    const dmtColors = { E: '3B82F6', R: '10B981', W: 'F59E0B', X: '8B5CF6' };
+                    const stepColor = dmtColors[row.dataMovementType] || '333333';
+
+                    docChildren.push(
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: `${stepIndex}) `, bold: true, size: 21, font: '微软雅黑' }),
+                                new TextRun({ text: `${row.subProcessDesc || ''}`, size: 21, font: '微软雅黑' }),
+                                new TextRun({ text: `（${dmtLabel}`, size: 21, font: '微软雅黑', color: stepColor }),
+                                new TextRun({ text: row.dataGroup ? ` - ${row.dataGroup}` : '', size: 21, font: '微软雅黑', color: stepColor }),
+                                new TextRun({ text: '）', size: 21, font: '微软雅黑', color: stepColor })
+                            ],
+                            spacing: { after: 60 },
+                            indent: { left: 480 }
+                        })
+                    );
+                }
+
+                // ── Heading 3: 功能描述 (对应 Java 的 addFuncDetial("功能描述")) ──
+                docChildren.push(
+                    new Paragraph({
+                        children: [new TextRun({
+                            text: `${funcNumber}.2  功能描述`,
+                            bold: true, size: 24, font: '微软雅黑', color: '6C5CE7'
+                        })],
+                        heading: HeadingLevel.HEADING_3,
+                        spacing: { before: 300, after: 200 }
+                    })
+                );
+
+                // 功能描述内容 (对应 Java 的 addContent(functionDesc))
+                // 从数据行中构建描述
+                const descParts = [];
+                descParts.push(`${group.cleanName}由${group.functionalUser || '用户'}通过${group.triggerEvent || '用户触发'}触发，`);
+                descParts.push(`共包含 ${group.rows.length} 个数据移动子过程。`);
+
+                // 按ERWX分类描述
+                const eRows = group.rows.filter(r => r.dataMovementType === 'E');
+                const rRows = group.rows.filter(r => r.dataMovementType === 'R');
+                const wRows = group.rows.filter(r => r.dataMovementType === 'W');
+                const xRows = group.rows.filter(r => r.dataMovementType === 'X');
+
+                if (eRows.length > 0) descParts.push(`进入数据：${eRows.map(r => r.dataGroup || r.subProcessDesc).filter(Boolean).join('、')}。`);
+                if (rRows.length > 0) descParts.push(`读取数据：${rRows.map(r => r.dataGroup || r.subProcessDesc).filter(Boolean).join('、')}。`);
+                if (wRows.length > 0) descParts.push(`写入数据：${wRows.map(r => r.dataGroup || r.subProcessDesc).filter(Boolean).join('、')}。`);
+                if (xRows.length > 0) descParts.push(`退出数据：${xRows.map(r => r.dataGroup || r.subProcessDesc).filter(Boolean).join('、')}。`);
+
+                // 详细数据属性
+                const dataAttrs = group.rows.filter(r => r.dataAttributes).map(r => `${r.dataGroup || '数据组'}：${r.dataAttributes}`);
+                if (dataAttrs.length > 0) {
+                    descParts.push(`\n涉及的数据属性：`);
+                }
+
+                docChildren.push(
+                    new Paragraph({
+                        children: [new TextRun({ text: descParts.join(''), size: 21, font: '微软雅黑' })],
+                        spacing: { after: 100 }
+                    })
+                );
+
+                // 数据属性明细
+                if (dataAttrs.length > 0) {
+                    for (const attr of dataAttrs) {
+                        docChildren.push(
+                            new Paragraph({
+                                children: [new TextRun({ text: `• ${attr}`, size: 20, font: '微软雅黑', color: '555555' })],
+                                spacing: { after: 60 },
+                                indent: { left: 480 }
+                            })
+                        );
+                    }
+                }
+
+                // 功能过程间间距
+                docChildren.push(new Paragraph({ children: [new TextRun({ text: '' })], spacing: { after: 200 } }));
+            }
+        }
+
+        // ── 6. 生成并发送文档 ──
+        const doc = new Document({
+            creator: 'COSMIC 拆分智能分析系统',
+            title: documentName || filename,
+            description: 'COSMIC功能规模拆分报告 - 自动生成',
+            styles: {
+                default: {
+                    document: {
+                        run: { font: '微软雅黑', size: 21 }
+                    }
+                }
+            },
+            sections: [{
+                properties: {
+                    page: {
+                        margin: { top: 1440, right: 1080, bottom: 1440, left: 1080 }
+                    }
+                },
+                children: docChildren
+            }]
+        });
+
+        const buffer = await Packer.toBuffer(doc);
+
+        console.log(`✅ Word文档生成成功，大小: ${(buffer.length / 1024).toFixed(1)} KB`);
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}.docx`);
+        res.send(buffer);
+    } catch (error) {
+        console.error('导出Word失败:', error);
+        res.status(500).json({ error: '导出Word失败: ' + error.message });
     }
 });
 
