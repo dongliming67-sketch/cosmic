@@ -291,8 +291,8 @@ function App({ user, token, onLogout }) {
         return cleanProcess + original;
     };
 
-    const deduplicateData = (existing, newData) => {
-        // 1. 按功能过程去重（跳过已存在的整个功能过程）
+    const deduplicateData = (existing, newData, expectedNames = null) => {
+        // 1. 按功能过程去重（跳过已存在的整个功能过程，但白名单内的不跳过）
         const existingProcesses = new Set(
             existing.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
                 .map(r => r.functionalProcess.toLowerCase().trim())
@@ -301,11 +301,17 @@ function App({ user, token, onLogout }) {
         let skipCurrent = false;
         for (const row of newData) {
             if (row.dataMovementType === 'E' && row.functionalProcess) {
-                if (existingProcesses.has(row.functionalProcess.toLowerCase().trim())) {
+                const nameKey = row.functionalProcess.toLowerCase().trim();
+                // 白名单保护：本批次明确要求拆分的功能过程，即使重名也不跳过
+                if (expectedNames && expectedNames.has(nameKey)) {
+                    skipCurrent = false;
+                    existingProcesses.add(nameKey);
+                } else if (existingProcesses.has(nameKey)) {
                     skipCurrent = true; continue;
+                } else {
+                    skipCurrent = false;
+                    existingProcesses.add(nameKey);
                 }
-                skipCurrent = false;
-                existingProcesses.add(row.functionalProcess.toLowerCase().trim());
             }
             if (!skipCurrent) result.push(row);
         }
@@ -730,7 +736,10 @@ function App({ user, token, onLogout }) {
                     if (res.data.success) {
                         const newData = res.data.tableData || [];
                         if (newData.length > 0) {
-                            const deduped = deduplicateData(allTableData, newData);
+                            const expectedNames = new Set(
+                                batch.functions.map(f => f.functionName.toLowerCase().trim())
+                            );
+                            const deduped = deduplicateData(allTableData, newData, expectedNames);
                             if (deduped.length > 0) {
                                 allTableData = [...allTableData, ...deduped];
                                 setTableData(allTableData);

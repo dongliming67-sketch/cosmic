@@ -105,9 +105,82 @@ function sanitizeText(text) {
 }
 
 /**
- * 解析Markdown表格
+ * 名称归一化（去掉章节标记、序号、多余空格）
  */
-function parseMarkdownTable(markdown) {
+function normalizeProcessName(name) {
+    if (!name) return '';
+    return name
+        .replace(/\[.*?\]\s*/g, '')     // 去掉 [章节名]
+        .replace(/^[\d]+[.、\s]+/, '')   // 去掉序号
+        .replace(/\s+/g, '')            // 去掉空格
+        .toLowerCase()
+        .trim();
+}
+
+/**
+ * 名称对齐：将AI输出的功能过程名映射回阶段1确认的标准名称
+ * 解决AI在拆分时微调功能过程名称导致前端误去重、功能过程丢失
+ */
+function alignProcessNames(tableData, referenceNames) {
+    if (!referenceNames || referenceNames.length === 0) return tableData;
+
+    // 构建标准名称的归一化映射: normalized -> original
+    const normalizedMap = new Map();
+    for (const refName of referenceNames) {
+        const key = normalizeProcessName(refName);
+        if (key) normalizedMap.set(key, refName);
+    }
+
+    let alignCount = 0;
+    for (const row of tableData) {
+        if (!row.functionalProcess) continue;
+
+        const normalized = normalizeProcessName(row.functionalProcess);
+
+        // 1. 归一化后精确匹配
+        if (normalizedMap.has(normalized)) {
+            const ref = normalizedMap.get(normalized);
+            if (row.functionalProcess !== ref) {
+                console.log(`  🔗 对齐: "${row.functionalProcess}" → "${ref}"`);
+                row.functionalProcess = ref;
+                alignCount++;
+            }
+            continue;
+        }
+
+        // 2. 包含匹配：AI输出包含标准名核心部分，或标准名包含AI输出
+        let bestMatch = null;
+        let bestScore = 0;
+        for (const [refNorm, refOriginal] of normalizedMap.entries()) {
+            if (normalized.includes(refNorm) || refNorm.includes(normalized)) {
+                const score = Math.min(normalized.length, refNorm.length) / Math.max(normalized.length, refNorm.length);
+                if (score > bestScore && score > 0.6) {
+                    bestScore = score;
+                    bestMatch = refOriginal;
+                }
+            }
+        }
+
+        if (bestMatch) {
+            console.log(`  🔗 模糊对齐: "${row.functionalProcess}" → "${bestMatch}" (相似度${(bestScore * 100).toFixed(0)}%)`);
+            row.functionalProcess = bestMatch;
+            alignCount++;
+        }
+    }
+
+    if (alignCount > 0) {
+        console.log(`🔗 名称对齐: 共修正 ${alignCount} 个功能过程名称`);
+    }
+
+    return tableData;
+}
+
+/**
+ * 解析Markdown表格
+ * @param {string} markdown - AI输出的Markdown内容
+ * @param {string[]|null} referenceNames - 阶段1确认的标准功能过程名列表（用于名称对齐）
+ */
+function parseMarkdownTable(markdown, referenceNames = null) {
     if (!markdown) return [];
 
     const tableData = [];
@@ -162,6 +235,11 @@ function parseMarkdownTable(markdown) {
             dataGroup: sanitizeText(dataGroup) || '待补充',
             dataAttributes: sanitizeText(dataAttributes) || '待补充'
         });
+    }
+
+    // 名称对齐：将AI输出的功能过程名映射回阶段1的标准名
+    if (referenceNames && referenceNames.length > 0) {
+        alignProcessNames(tableData, referenceNames);
     }
 
     return deduplicateTableData(tableData);
@@ -941,8 +1019,11 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
         }
         const reply = completion.choices[0].message.content;
 
-        // 解析表格数据
-        const tableData = parseMarkdownTable(reply);
+        // 从functionList中提取标准功能过程名作为对齐参考
+        const refFunctions = extractFunctionsFromText(functionList);
+        const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
+        // 解析表格数据（含名称对齐）
+        const tableData = parseMarkdownTable(reply, refNames);
 
         console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程`);
         res.json({
@@ -1025,7 +1106,12 @@ ${completedFunctions.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
         }
         const reply = completion.choices[0].message.content;
-        const tableData = parseMarkdownTable(reply);
+        // 从batchFunctions中提取标准功能过程名作为对齐参考
+        const refNames = batchFunctions.map(text => {
+            const match = text.match(/##\s*功能过程[：:]\s*(.+)/);
+            return match ? match[1].trim() : null;
+        }).filter(Boolean);
+        const tableData = parseMarkdownTable(reply, refNames);
 
         console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程`);
         res.json({
