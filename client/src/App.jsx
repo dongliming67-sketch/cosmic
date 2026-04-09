@@ -350,6 +350,21 @@ function App({ user, token, onLogout }) {
             if (desc) allDescNames.add(desc.toLowerCase());
         }
 
+        // 收集已有 existing 中的数据属性
+        const existingDataAttrs = new Map(); // dataAttributes(lower) -> processName
+        for (let i = 0; i < existing.length; i++) {
+            const attr = existing[i].dataAttributes?.trim();
+            if (attr && attr !== '待补充') {
+                existingDataAttrs.set(attr.toLowerCase(), rowProcessMap[i]);
+            }
+        }
+
+        const allAttrNames = new Set();
+        for (let i = 0; i < existing.length; i++) {
+            const attr = existing[i].dataAttributes?.trim();
+            if (attr && attr !== '待补充') allAttrNames.add(attr.toLowerCase());
+        }
+
         // 对新增result中的行做数据组/子过程去重（关键词前缀策略）
         const newStartIdx = existing.length;
         for (let i = 0; i < result.length; i++) {
@@ -380,6 +395,20 @@ function App({ user, token, onLogout }) {
                 }
             }
             allDescNames.add((result[i].subProcessDesc || desc || '').toLowerCase().trim());
+
+            // 检查数据属性是否与已有数据冲突
+            const attr = result[i].dataAttributes?.trim();
+            if (attr && attr !== '待补充') {
+                const attrKey = attr.toLowerCase();
+                if (existingDataAttrs.has(attrKey) && existingDataAttrs.get(attrKey) !== processName) {
+                    const newName = makeUniqueName(attr, processName, allAttrNames);
+                    if (newName !== attr) {
+                        result[i] = { ...result[i], dataAttributes: newName };
+                    }
+                }
+                allAttrNames.add((result[i].dataAttributes || attr).toLowerCase().trim());
+                existingDataAttrs.set((result[i].dataAttributes || attr).toLowerCase(), processName);
+            }
         }
 
         // 3. 最终验证：检查result中是否仍有重复，用关键词后缀去重
@@ -419,6 +448,23 @@ function App({ user, token, onLogout }) {
                     hasdup = true;
                 }
                 verifyDescSet.add(result[i].subProcessDesc.trim().toLowerCase());
+            }
+
+            // 数据属性验证
+            const verifyAttrSet = new Set();
+            for (let i = 0; i < existing.length; i++) {
+                const a = existing[i].dataAttributes?.trim()?.toLowerCase();
+                if (a && a !== '待补充') verifyAttrSet.add(a);
+            }
+            for (let i = 0; i < result.length; i++) {
+                const a = result[i].dataAttributes?.trim()?.toLowerCase();
+                if (!a || a === '待补充') continue;
+                if (verifyAttrSet.has(a)) {
+                    const newName = makeUniqueName(result[i].dataAttributes, rowProcessMap[newStartIdx + i], verifyAttrSet);
+                    result[i] = { ...result[i], dataAttributes: newName };
+                    hasdup = true;
+                }
+                verifyAttrSet.add(result[i].dataAttributes.trim().toLowerCase());
             }
 
             if (!hasdup) break;

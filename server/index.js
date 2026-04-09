@@ -314,6 +314,7 @@ function getRowProcessName(tableData, rowIndex) {
  * 对解析后的表格数据进行深度去重
  * 1. 数据组名称全局不重复
  * 2. 子过程描述全局不重复
+ * 3. 数据属性全局不重复
  * 策略：使用功能过程的语义关键词区分，关键词长度逐步递增，不使用数字编号
  */
 function deduplicateTableData(tableData) {
@@ -322,6 +323,7 @@ function deduplicateTableData(tableData) {
     const MAX_ROUNDS = 5;
     let totalDataGroupFixes = 0;
     let totalSubProcessFixes = 0;
+    let totalDataAttrFixes = 0;
 
     for (let round = 1; round <= MAX_ROUNDS; round++) {
         let fixedThisRound = 0;
@@ -408,6 +410,41 @@ function deduplicateTableData(tableData) {
             }
         }
 
+        // ——— 步骤3.5：数据属性跨功能过程去重（关键词前缀） ———
+        const dataAttrMap = new Map();
+        for (let i = 0; i < tableData.length; i++) {
+            const attr = tableData[i].dataAttributes;
+            if (!attr || attr === '待补充') continue;
+            const key = attr.toLowerCase().trim();
+            if (!dataAttrMap.has(key)) dataAttrMap.set(key, []);
+            dataAttrMap.get(key).push({ index: i, processName: rowProcessMap[i] });
+        }
+
+        const allAttrNames = new Set();
+        for (let i = 0; i < tableData.length; i++) {
+            const attr = tableData[i].dataAttributes;
+            if (attr && attr !== '待补充') allAttrNames.add(attr.toLowerCase().trim());
+        }
+
+        for (const [key, rows] of dataAttrMap.entries()) {
+            const uniqueProcesses = [...new Set(rows.map(r => r.processName))];
+            if (uniqueProcesses.length <= 1) continue;
+
+            let firstKept = false;
+            for (const row of rows) {
+                if (!firstKept) { firstKept = true; continue; }
+                const original = tableData[row.index].dataAttributes;
+                const newName = makeUniqueName(original, row.processName, allAttrNames);
+                if (newName !== original) {
+                    allAttrNames.delete(original.toLowerCase().trim());
+                    tableData[row.index].dataAttributes = newName;
+                    allAttrNames.add(newName.toLowerCase().trim());
+                    fixedThisRound++;
+                    totalDataAttrFixes++;
+                }
+            }
+        }
+
         // ——— 步骤4：数据组绝对去重（关键词前缀融入） ———
         const dgAbsCheck = new Set();
         for (let i = 0; i < tableData.length; i++) {
@@ -442,6 +479,23 @@ function deduplicateTableData(tableData) {
             }
         }
 
+        // ——— 步骤5.5：数据属性绝对去重（关键词前缀融入） ———
+        const attrAbsCheck = new Set();
+        for (let i = 0; i < tableData.length; i++) {
+            const attr = tableData[i].dataAttributes;
+            if (!attr || attr === '待补充') continue;
+            const key = attr.toLowerCase().trim();
+            if (attrAbsCheck.has(key)) {
+                const newName = makeUniqueName(attr, rowProcessMap[i], attrAbsCheck);
+                tableData[i].dataAttributes = newName;
+                attrAbsCheck.add(newName.toLowerCase().trim());
+                fixedThisRound++;
+                totalDataAttrFixes++;
+            } else {
+                attrAbsCheck.add(key);
+            }
+        }
+
         // ——— 检查是否还有残留重复 ———
         if (fixedThisRound === 0) {
             if (round > 1) {
@@ -458,8 +512,8 @@ function deduplicateTableData(tableData) {
         }
     }
 
-    if (totalDataGroupFixes > 0 || totalSubProcessFixes > 0) {
-        console.log(`📊 去重汇总: 共修正 ${totalDataGroupFixes} 个数据组名称, ${totalSubProcessFixes} 个子过程描述`);
+    if (totalDataGroupFixes > 0 || totalSubProcessFixes > 0 || totalDataAttrFixes > 0) {
+        console.log(`📊 去重汇总: 共修正 ${totalDataGroupFixes} 个数据组名称, ${totalSubProcessFixes} 个子过程描述, ${totalDataAttrFixes} 个数据属性`);
     }
 
     return tableData;
@@ -496,6 +550,21 @@ function forceKeywordDedup(tableData, rowProcessMap) {
             descSeen.add(newName.toLowerCase().trim());
         } else {
             descSeen.add(key);
+        }
+    }
+
+    // 数据属性去重
+    const attrSeen = new Set();
+    for (let i = 0; i < tableData.length; i++) {
+        const attr = tableData[i].dataAttributes;
+        if (!attr || attr === '待补充') continue;
+        const key = attr.toLowerCase().trim();
+        if (attrSeen.has(key)) {
+            const newName = makeUniqueName(attr, rowProcessMap[i], attrSeen);
+            tableData[i].dataAttributes = newName;
+            attrSeen.add(newName.toLowerCase().trim());
+        } else {
+            attrSeen.add(key);
         }
     }
 }
