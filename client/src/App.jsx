@@ -659,6 +659,33 @@ function App({ user, token, onLogout }) {
             setFunctionListText(allFunctions);
             // 自动解析为结构化数据
             const parsed = parseFunctionListText(allFunctions);
+
+            // ── 将章节的 level1/level2/level3 注入到每个功能过程对象 ──
+            // chapters 状态里已有后端返回的层级信息，通过 sourceChapter 匹配 title
+            const chapterLevelMap = {};
+            (chapterList || chapters).forEach(ch => {
+                if (ch.title) {
+                    chapterLevelMap[ch.title] = {
+                        level1: ch.level1 || '',
+                        level2: ch.level2 || '',
+                        level3: ch.level3 || ''
+                    };
+                }
+            });
+            parsed.forEach(f => {
+                // 如果 moduleStructure 已成功匹配（level2 非空说明有具体模块归属），
+                // 不用粗粒度章节层级覆盖
+                if (f.level2) return;
+                const src = f.sourceChapter;
+                if (src && chapterLevelMap[src]) {
+                    // 仅填充空缺的层级字段，不覆盖已有值
+                    const cl = chapterLevelMap[src];
+                    if (!f.level1 && cl.level1) f.level1 = cl.level1;
+                    if (!f.level2 && cl.level2) f.level2 = cl.level2;
+                    if (!f.level3 && cl.level3) f.level3 = cl.level3;
+                }
+            });
+
             setParsedFunctions(parsed);
             setCurrentStep(3);
 
@@ -769,6 +796,15 @@ function App({ user, token, onLogout }) {
                 });
 
                 try {
+                    // 取批次第一个功能的章节层级作为 headingContext
+                    const batchHeadingCtx = (() => {
+                        const f = batch.functions[0];
+                        if (!f) return null;
+                        const l1 = f.level1 || '';
+                        const l2 = f.level2 || '';
+                        const l3 = f.level3 || '';
+                        return (l1 || l2 || l3) ? { level1: l1, level2: l2, level3: l3 } : null;
+                    })();
                     const res = await axios.post('/api/cosmic-split-batch', {
                         batchFunctions: batch.texts,
                         batchIndex: bi,
@@ -776,7 +812,8 @@ function App({ user, token, onLogout }) {
                         documentContent: documentContent.substring(0, 6000),
                         userGuidelines,
                         previousResults: allTableData,
-                        userConfig: getUserConfig()
+                        userConfig: getUserConfig(),
+                        headingContext: batchHeadingCtx
                     }, { signal });
 
                     if (res.data.success) {
@@ -938,6 +975,15 @@ function App({ user, token, onLogout }) {
                 });
 
                 try {
+                    // 重试时也携带章节层级
+                    const retryHeadingCtx = (() => {
+                        const f = batch.functions[0];
+                        if (!f) return null;
+                        const l1 = f.level1 || '';
+                        const l2 = f.level2 || '';
+                        const l3 = f.level3 || '';
+                        return (l1 || l2 || l3) ? { level1: l1, level2: l2, level3: l3 } : null;
+                    })();
                     const res = await axios.post('/api/cosmic-split-batch', {
                         batchFunctions: batch.texts,
                         batchIndex: batch.originalIndex,
@@ -945,7 +991,8 @@ function App({ user, token, onLogout }) {
                         documentContent: documentContent.substring(0, 6000),
                         userGuidelines,
                         previousResults: allTableData,
-                        userConfig: getUserConfig()
+                        userConfig: getUserConfig(),
+                        headingContext: retryHeadingCtx
                     }, { signal });
 
                     if (res.data.success) {
@@ -1382,7 +1429,11 @@ function App({ user, token, onLogout }) {
                 functionalUser: '',
                 functionName: '',
                 description: '',
-                selected: true
+                selected: true,
+                sourceChapter: '',
+                level1: '',
+                level2: '',
+                level3: ''
             };
             for (const line of lines) {
                 const t = line.trim();
@@ -1391,7 +1442,10 @@ function App({ user, token, onLogout }) {
                 } else if (t.match(/^##\s*功能用户[：:]/)) {
                     func.functionalUser = t.replace(/^##\s*功能用户[：:]\s*/, '').trim();
                 } else if (t.match(/^##\s*功能过程[：:]/) && !t.match(/描述/)) {
-                    func.functionName = t.replace(/^##\s*功能过程[：:]\s*/, '').replace(/^\[.*?\]\s*/, '').trim();
+                    const raw = t.replace(/^##\s*功能过程[：:]\s*/, '').trim();
+                    const chMatch = raw.match(/^\[(.*?)\]/);
+                    if (chMatch) func.sourceChapter = chMatch[1];
+                    func.functionName = raw.replace(/^\[.*?\]\s*/, '').trim();
                 } else if (t.match(/^##\s*功能过程描述[：:]/)) {
                     func.description = t.replace(/^##\s*功能过程描述[：:]\s*/, '').trim();
                 }
@@ -1400,7 +1454,85 @@ function App({ user, token, onLogout }) {
                 functions.push(func);
             }
         }
+        // 填入 level1/level2/level3（根据 moduleStructure 匹配 sourceChapter）
+        // 辅助函数：用 businessObjects 关键词模糊匹配模块
+        const fuzzyMatchModule = (func, modules) => {
+            if (!modules || modules.length === 0) return null;
+            const fname = (func.functionName || '').toLowerCase();
+            const fdesc = (func.description || '').toLowerCase();
+            const combined = fname + ' ' + fdesc;
+            if (!combined.trim()) return null;
+            let bestMatch = null;
+            let bestScore = 0;
+            for (const m of modules) {
+                let score = 0;
+                // 匹配业务对象关键词
+                const bos = m.businessObjects || [];
+                for (const bo of bos) {
+                    const boKey = bo.replace(/[（()）\[\]]/g, '').toLowerCase().trim();
+                    if (boKey.length >= 2) {
+                        const checkLen = Math.min(4, boKey.length);
+                        if (combined.includes(boKey.substring(0, checkLen))) {
+                            score += boKey.length;
+                        }
+                    }
+                }
+                // 匹配模块名称关键词
+                const modName = (m.level3 || '').replace(/^[\d.]+\s*/, '').toLowerCase().trim();
+                if (modName.length >= 2) {
+                    const checkLen = Math.min(4, modName.length);
+                    if (combined.includes(modName.substring(0, checkLen))) {
+                        score += modName.length;
+                    }
+                }
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMatch = m;
+                }
+            }
+            return bestScore >= 2 ? bestMatch : null;
+        };
+
+        functions.forEach(f => {
+            if (!f.sourceChapter) return;
+            if (moduleStructure && moduleStructure.modules) {
+                // 1. 精确匹配 sourceChapter
+                let matched = moduleStructure.modules.find(m =>
+                    m.level3 === f.sourceChapter || m.level2 === f.sourceChapter || m.level1 === f.sourceChapter
+                );
+                // 2. 精确匹配失败时，用 businessObjects/模块名 模糊匹配
+                if (!matched) {
+                    matched = fuzzyMatchModule(f, moduleStructure.modules);
+                }
+                if (matched) {
+                    f.level1 = matched.level1 || '';
+                    f.level2 = matched.level2 || '';
+                    f.level3 = matched.level3 || '';
+                } else {
+                    // 未匹配时将章节标题放到 level3
+                    f.level3 = f.sourceChapter;
+                }
+            } else {
+                f.level3 = f.sourceChapter;
+            }
+        });
         return functions;
+    };
+
+    // 根据功能过程的 sourceChapter 获取三级模块信息
+    const getModuleLevels = (func) => {
+        // 优先使用功能过程对象上已有的层级（由 parseFunctionListText 模糊匹配设定）
+        if (func.level1 && func.level2) {
+            return { level1: func.level1, level2: func.level2, level3: func.level3 || '' };
+        }
+        const ch = func.sourceChapter || '';
+        if (moduleStructure && moduleStructure.modules && ch) {
+            const matched = moduleStructure.modules.find(m =>
+                m.level3 === ch || m.level2 === ch || m.level1 === ch
+            );
+            if (matched) return { level1: matched.level1 || '', level2: matched.level2 || '', level3: matched.level3 || '' };
+        }
+        return { level1: func.level1 || '', level2: func.level2 || '', level3: func.level3 || ch };
     };
 
     // 将结构化数组转回 ##格式纯文本
@@ -1436,7 +1568,11 @@ function App({ user, token, onLogout }) {
             functionalUser: '发起者：用户 接收者：用户',
             functionName: '',
             description: '',
-            selected: true
+            selected: true,
+            sourceChapter: '',
+            level1: '',
+            level2: '',
+            level3: ''
         }]);
         // 自动聚焦到最后一个
         setTimeout(() => {
@@ -1456,7 +1592,11 @@ function App({ user, token, onLogout }) {
                 functionalUser: original.functionalUser,
                 functionName: original.functionName + '（拆分）',
                 description: original.description,
-                selected: true
+                selected: true,
+                sourceChapter: original.sourceChapter || '',
+                level1: original.level1 || '',
+                level2: original.level2 || '',
+                level3: original.level3 || ''
             };
             updated.splice(index + 1, 0, clone);
             return updated;
@@ -2452,33 +2592,66 @@ function App({ user, token, onLogout }) {
                                     <table className="data-table">
                                         <thead>
                                             <tr>
-                                                <th style={{ width: '4%' }}>#</th>
-                                                <th style={{ width: '14%' }}>功能用户</th>
-                                                <th style={{ width: '8%' }}>触发事件</th>
-                                                <th style={{ width: '14%' }}>功能过程</th>
-                                                <th style={{ width: '16%' }}>子过程描述</th>
-                                                <th style={{ width: '6%' }}>类型</th>
-                                                <th style={{ width: '14%' }}>数据组</th>
-                                                <th style={{ width: '24%' }}>数据属性</th>
+                                                <th style={{ width: '3%' }}>#</th>
+                                                <th style={{ width: '7%' }}>一级模块</th>
+                                                <th style={{ width: '7%' }}>二级模块</th>
+                                                <th style={{ width: '8%' }}>三级模块</th>
+                                                <th style={{ width: '11%' }}>功能用户</th>
+                                                <th style={{ width: '6%' }}>触发事件</th>
+                                                <th style={{ width: '11%' }}>功能过程</th>
+                                                <th style={{ width: '13%' }}>子过程描述</th>
+                                                <th style={{ width: '5%' }}>类型</th>
+                                                <th style={{ width: '10%' }}>数据组</th>
+                                                <th style={{ width: '19%' }}>数据属性</th>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {tableData.map((row, idx) => (
-                                                <tr key={idx} className={row.dataMovementType === 'E' ? 'row-e' : ''}>
-                                                    <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{idx + 1}</td>
-                                                    <td>{row.dataMovementType === 'E' ? row.functionalUser : ''}</td>
-                                                    <td>{row.dataMovementType === 'E' ? row.triggerEvent : ''}</td>
-                                                    <td style={{ fontWeight: row.functionalProcess ? 600 : 400, color: row.functionalProcess ? 'var(--text-primary)' : '' }}>
-                                                        {row.functionalProcess}
-                                                    </td>
-                                                    <td>{row.subProcessDesc}</td>
-                                                    <td style={{ textAlign: 'center' }}>
-                                                        <span className={`dmt-badge dmt-${row.dataMovementType?.toLowerCase()}`}>{row.dataMovementType}</span>
-                                                    </td>
-                                                    <td>{row.dataGroup}</td>
-                                                    <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.dataAttributes}</td>
-                                                </tr>
-                                            ))}
+                                            {(() => {
+                                                // 构建 functionalProcess → levels 映射
+                                                const procLevelMap = {};
+                                                parsedFunctions.forEach(f => {
+                                                    const lv = getModuleLevels(f);
+                                                    procLevelMap[f.functionName] = lv;
+                                                });
+                                                let lastLevels = { level1: '', level2: '', level3: '' };
+                                                return tableData.map((row, idx) => {
+                                                    if (row.dataMovementType === 'E' && row.functionalProcess) {
+                                                        lastLevels = procLevelMap[row.functionalProcess] || { level1: '', level2: '', level3: '' };
+                                                    }
+                                                    const lv = lastLevels;
+                                                    return (
+                                                        <tr key={idx} className={row.dataMovementType === 'E' ? 'row-e' : ''}>
+                                                            <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{idx + 1}</td>
+                                                            <td style={{ fontSize: 11 }}>
+                                                                {row.dataMovementType === 'E' && lv.level1 ? (
+                                                                    <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: 4, background: 'rgba(108,92,231,0.1)', color: 'var(--accent-violet)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }} title={lv.level1}>{lv.level1}</span>
+                                                                ) : ''}
+                                                            </td>
+                                                            <td style={{ fontSize: 11 }}>
+                                                                {row.dataMovementType === 'E' && lv.level2 ? (
+                                                                    <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: 4, background: 'rgba(59,130,246,0.1)', color: '#3b82f6', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }} title={lv.level2}>{lv.level2}</span>
+                                                                ) : ''}
+                                                            </td>
+                                                            <td style={{ fontSize: 11 }}>
+                                                                {row.dataMovementType === 'E' && lv.level3 ? (
+                                                                    <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: 4, background: 'rgba(16,185,129,0.1)', color: '#10b981', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }} title={lv.level3}>{lv.level3}</span>
+                                                                ) : ''}
+                                                            </td>
+                                                            <td>{row.dataMovementType === 'E' ? row.functionalUser : ''}</td>
+                                                            <td>{row.dataMovementType === 'E' ? row.triggerEvent : ''}</td>
+                                                            <td style={{ fontWeight: row.functionalProcess ? 600 : 400, color: row.functionalProcess ? 'var(--text-primary)' : '' }}>
+                                                                {row.functionalProcess}
+                                                            </td>
+                                                            <td>{row.subProcessDesc}</td>
+                                                            <td style={{ textAlign: 'center' }}>
+                                                                <span className={`dmt-badge dmt-${row.dataMovementType?.toLowerCase()}`}>{row.dataMovementType}</span>
+                                                            </td>
+                                                            <td>{row.dataGroup}</td>
+                                                            <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.dataAttributes}</td>
+                                                        </tr>
+                                                    );
+                                                });
+                                            })()}
                                         </tbody>
                                     </table>
                                 </div>
@@ -2656,6 +2829,9 @@ function App({ user, token, onLogout }) {
                                 <div className="func-editor-table-header">
                                     <div className="func-col func-col-check">选中</div>
                                     <div className="func-col func-col-idx">#</div>
+                                    <div className="func-col func-col-module">一级模块</div>
+                                    <div className="func-col func-col-module">二级模块</div>
+                                    <div className="func-col func-col-module">三级模块</div>
                                     <div className="func-col func-col-trigger">触发事件</div>
                                     <div className="func-col func-col-user">功能用户</div>
                                     <div className="func-col func-col-name">功能过程名称</div>
@@ -2688,6 +2864,19 @@ function App({ user, token, onLogout }) {
                                                 <div className="func-col func-col-idx">
                                                     <span className="func-idx-badge">{idx + 1}</span>
                                                 </div>
+                                                {(() => {
+                                                    const lv = getModuleLevels(func); return (<>
+                                                        <div className="func-col func-col-module" title={lv.level1}>
+                                                            <span className="func-module-tag lv1">{lv.level1 || '—'}</span>
+                                                        </div>
+                                                        <div className="func-col func-col-module" title={lv.level2}>
+                                                            <span className="func-module-tag lv2">{lv.level2 || '—'}</span>
+                                                        </div>
+                                                        <div className="func-col func-col-module" title={lv.level3}>
+                                                            <span className="func-module-tag lv3">{lv.level3 || '—'}</span>
+                                                        </div>
+                                                    </>);
+                                                })()}
                                                 <div className="func-col func-col-trigger">
                                                     <select
                                                         className="func-select"

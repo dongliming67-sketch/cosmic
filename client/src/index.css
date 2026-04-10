@@ -1108,6 +1108,38 @@ textarea.setting-input {
     text-align: center;
 }
 
+.func-col-module {
+    width: 90px;
+    overflow: hidden;
+}
+
+.func-module-tag {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 84px;
+}
+
+.func-module-tag.lv1 {
+    background: rgba(108, 92, 231, 0.1);
+    color: var(--accent-violet);
+}
+
+.func-module-tag.lv2 {
+    background: rgba(59, 130, 246, 0.1);
+    color: #3b82f6;
+}
+
+.func-module-tag.lv3 {
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+}
+
 .func-col-trigger {
     width: 110px;
 }

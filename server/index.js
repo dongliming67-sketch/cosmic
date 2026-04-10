@@ -180,7 +180,13 @@ function alignProcessNames(tableData, referenceNames) {
  * @param {string} markdown - AI输出的Markdown内容
  * @param {string[]|null} referenceNames - 阶段1确认的标准功能过程名列表（用于名称对齐）
  */
-function parseMarkdownTable(markdown, referenceNames = null) {
+/**
+ * 解析Markdown表格
+ * @param {string} markdown - AI输出的Markdown内容
+ * @param {string[]|null} referenceNames - 阶段1确认的标准功能过程名列表（用于名称对齐）
+ * @param {{ level1?: string, level2?: string, level3?: string }|null} headingContext - 当前章节的层级上下文
+ */
+function parseMarkdownTable(markdown, referenceNames = null, headingContext = null) {
     if (!markdown) return [];
 
     const tableData = [];
@@ -190,6 +196,11 @@ function parseMarkdownTable(markdown, referenceNames = null) {
     let currentFunctionalUser = '';
     let currentTriggerEvent = '';
     let currentFunctionalProcess = '';
+
+    // 提取层级信息（来自章节上下文）
+    const hLevel1 = headingContext?.level1 || '';
+    const hLevel2 = headingContext?.level2 || '';
+    const hLevel3 = headingContext?.level3 || '';
 
     for (const line of lines) {
         const trimmed = line.trim();
@@ -233,7 +244,11 @@ function parseMarkdownTable(markdown, referenceNames = null) {
             subProcessDesc: cleanSubProcess,
             dataMovementType: dmt,
             dataGroup: sanitizeText(dataGroup) || '待补充',
-            dataAttributes: sanitizeText(dataAttributes) || '待补充'
+            dataAttributes: sanitizeText(dataAttributes) || '待补充',
+            // 章节层级（来自 headingContext）
+            level1: hLevel1,
+            level2: hLevel2,
+            level3: hLevel3
         });
     }
 
@@ -742,6 +757,30 @@ app.post('/api/understand-document', async (req, res) => {
 // ═══════════════════════ 章节识别 ═══════════════════════
 
 /**
+ * 从标题文本中提取数字编号层级深度
+ * 规则（以图片示例为准）：
+ *   「2.1 关于...」      → 编号段数2 → 一级标题 depth=1
+ *   「2.1.1 故障...」   → 编号段数3 → 二级标题 depth=2
+ *   「2.1.1.1 新增...」 → 编号段数4 → 三级标题 depth=3
+ * 非数字编号标题(第X章/中文序号等) → depth=0
+ * @param {string} title - 标题文本
+ * @returns {{ depth: number, numStr: string }} depth=0表示非数字编号
+ */
+function extractHeadingLevel(title) {
+    if (!title) return { depth: 0, numStr: '' };
+    const trimmed = title.trim();
+    // 匹配数字编号开头，如 "2.1"、"2.1.1"、"2.1.1.2"
+    const numMatch = trimmed.match(/^(\d+(?:\.\d+)*)(?:[\s.]|$)/);
+    if (!numMatch) return { depth: 0, numStr: '' };
+    const numStr = numMatch[1]; // e.g. "2.1.1"
+    const parts = numStr.split('.');
+    // 第一段是最顶层模块号（如"2"），后续才是层级深度
+    // depth = parts.length - 1，最少为1，最多为3
+    const depth = Math.min(Math.max(parts.length - 1, 1), 3);
+    return { depth, numStr };
+}
+
+/**
  * 自动识别文档章节结构
  * 辨别标题 vs 正文的多层过滤：
  *  1. 不同类型标题设不同最大长度（第X章60字, 数字编号30字, 中文序号35字）
@@ -749,6 +788,11 @@ app.post('/api/understand-document', async (req, res) => {
  *  3. 含正文特征词（应当/需要/如下/以下等）的行排除
  *  4. 两候选标题之间内容少于30字 → 是列表项而非章节分割点
  *  5. 章节数过多(>20) → 自动收敛到顶层标题
+ *
+ * 每个章节对象还携带 level1/level2/level3 字段（基于编号层级）：
+ *  - 2.1 xxx     → { level1: '2.1 xxx', level2: '', level3: '' }
+ *  - 2.1.1 xxx   → { level1: '2.1 xxx（继承）', level2: '2.1.1 xxx', level3: '' }
+ *  - 2.1.1.1 xxx → { level1: ..., level2: ..., level3: '2.1.1.1 xxx' }
  */
 function splitIntoChapters(text) {
     if (!text) return [];
@@ -841,17 +885,41 @@ function splitIntoChapters(text) {
         }
     }
 
-    // 按最终标题位置分章
+    // 按最终标题位置分章，同时计算 level1/level2/level3
+    // 维护滚动的每层当前标题文本
+    let currentL1 = '';
+    let currentL2 = '';
+    let currentL3 = '';
+
     for (let i = 0; i < finalPositions.length; i++) {
         const startLine = finalPositions[i];
         const endLine = (i < finalPositions.length - 1) ? finalPositions[i + 1] : lines.length;
         const title = lines[startLine].trim();
         const content = lines.slice(startLine, endLine).join('\n').trim();
+
+        // 根据编号层级更新滚动层级状态
+        const { depth } = extractHeadingLevel(title);
+        if (depth === 1) {
+            currentL1 = title;
+            currentL2 = '';
+            currentL3 = '';
+        } else if (depth === 2) {
+            currentL2 = title;
+            currentL3 = '';
+        } else if (depth === 3) {
+            currentL3 = title;
+        }
+        // depth===0 (非数字编号) 不更新层级
+
         chapters.push({
             title,
             content,
             charCount: content.length,
-            selected: content.length > 50
+            selected: content.length > 50,
+            level1: currentL1,
+            level2: currentL2,
+            level3: currentL3,
+            headingDepth: depth
         });
     }
 
@@ -1035,7 +1103,7 @@ app.post('/api/extract-functions', async (req, res) => {
 
 app.post('/api/cosmic-split', async (req, res) => {
     try {
-        const { functionList, documentContent = '', userGuidelines = '', previousResults = [], batchIndex = 0, totalBatches = 1, userConfig = null } = req.body;
+        const { functionList, documentContent = '', userGuidelines = '', previousResults = [], batchIndex = 0, totalBatches = 1, userConfig = null, headingContext = null } = req.body;
 
         if (!functionList) {
             return res.status(400).json({ error: '缺少功能过程列表' });
@@ -1091,10 +1159,10 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
         // 从functionList中提取标准功能过程名作为对齐参考
         const refFunctions = extractFunctionsFromText(functionList);
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
-        // 解析表格数据（含名称对齐）
-        const tableData = parseMarkdownTable(reply, refNames);
+        // 解析表格数据（含名称对齐 + 章节层级注入）
+        const tableData = parseMarkdownTable(reply, refNames, headingContext);
 
-        console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程`);
+        console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
             success: true,
             reply,
@@ -1120,7 +1188,8 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
             documentContent = '',      // 参考文档
             userGuidelines = '',       // 用户特殊要求
             previousResults = [],      // 之前批次已完成的结果（用于避免重复）
-            userConfig = null
+            userConfig = null,
+            headingContext = null      // 当前章节的层级上下文 {level1, level2, level3}
         } = req.body;
 
         if (!batchFunctions || batchFunctions.length === 0) {
@@ -1180,9 +1249,10 @@ ${completedFunctions.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             const match = text.match(/##\s*功能过程[：:]\s*(.+)/);
             return match ? match[1].trim() : null;
         }).filter(Boolean);
-        const tableData = parseMarkdownTable(reply, refNames);
+        // 解析表格数据（含名称对齐 + 章节层级注入）
+        const tableData = parseMarkdownTable(reply, refNames, headingContext);
 
-        console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程`);
+        console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
             success: true,
             reply,
@@ -1684,16 +1754,23 @@ app.post('/api/export-excel', async (req, res) => {
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('COSMIC拆分结果');
 
+        // 检测是否有层级字段（level1/level2/level3）
+        const hasLevels = tableData.some(r => r.level1 || r.level2 || r.level3);
+
         // 设置表头
-        const headers = ['功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性'];
+        const headers = hasLevels
+            ? ['一级标题', '二级标题', '三级标题', '功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性']
+            : ['功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性'];
         const headerRow = worksheet.addRow(headers);
 
         // 表头样式
-        headerRow.eachCell((cell) => {
+        headerRow.eachCell((cell, colNumber) => {
+            // 层级列用区别色（深紫色）
+            const isLevelCol = hasLevels && colNumber <= 3;
             cell.fill = {
                 type: 'pattern',
                 pattern: 'solid',
-                fgColor: { argb: 'FF1A1A2E' }
+                fgColor: { argb: isLevelCol ? 'FF4C1D95' : 'FF1A1A2E' }
             };
             cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
             cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
@@ -1706,20 +1783,38 @@ app.post('/api/export-excel', async (req, res) => {
         });
 
         // 设置列宽
-        worksheet.columns = [
-            { width: 28 }, // 功能用户
-            { width: 14 }, // 触发事件
-            { width: 24 }, // 功能过程
-            { width: 28 }, // 子过程描述
-            { width: 14 }, // 数据移动类型
-            { width: 24 }, // 数据组
-            { width: 40 }, // 数据属性
-        ];
+        if (hasLevels) {
+            worksheet.columns = [
+                { width: 22 }, // 一级标题
+                { width: 22 }, // 二级标题
+                { width: 22 }, // 三级标题
+                { width: 28 }, // 功能用户
+                { width: 14 }, // 触发事件
+                { width: 24 }, // 功能过程
+                { width: 28 }, // 子过程描述
+                { width: 14 }, // 数据移动类型
+                { width: 24 }, // 数据组
+                { width: 40 }, // 数据属性
+            ];
+        } else {
+            worksheet.columns = [
+                { width: 28 }, // 功能用户
+                { width: 14 }, // 触发事件
+                { width: 24 }, // 功能过程
+                { width: 28 }, // 子过程描述
+                { width: 14 }, // 数据移动类型
+                { width: 24 }, // 数据组
+                { width: 40 }, // 数据属性
+            ];
+        }
 
         // 填充数据
         let currentFuncUser = '';
         let currentTrigger = '';
         let currentProcess = '';
+        let prevL1 = '';
+        let prevL2 = '';
+        let prevL3 = '';
 
         tableData.forEach((row) => {
             const funcUser = row.functionalUser || currentFuncUser;
@@ -1730,17 +1825,46 @@ app.post('/api/export-excel', async (req, res) => {
             if (row.triggerEvent) currentTrigger = row.triggerEvent;
             if (row.functionalProcess) currentProcess = row.functionalProcess;
 
-            const dataRow = worksheet.addRow([
-                row.dataMovementType === 'E' ? funcUser : '',
-                row.dataMovementType === 'E' ? trigger : '',
-                process,
-                row.subProcessDesc || '',
-                row.dataMovementType || '',
-                row.dataGroup || '',
-                row.dataAttributes || ''
-            ]);
+            let dataRow;
+            if (hasLevels) {
+                // E行才展示层级，且只在变化时才填写
+                const isE = row.dataMovementType === 'E';
+                const l1 = row.level1 || '';
+                const l2 = row.level2 || '';
+                const l3 = row.level3 || '';
+                const showL1 = (isE && l1 && l1 !== prevL1) ? l1 : '';
+                const showL2 = (isE && l2 && l2 !== prevL2) ? l2 : '';
+                const showL3 = (isE && l3 && l3 !== prevL3) ? l3 : '';
+                if (isE && l1) prevL1 = l1;
+                if (isE && l2) prevL2 = l2;
+                if (isE && l3) prevL3 = l3;
+
+                dataRow = worksheet.addRow([
+                    showL1,
+                    showL2,
+                    showL3,
+                    isE ? funcUser : '',
+                    isE ? trigger : '',
+                    process,
+                    row.subProcessDesc || '',
+                    row.dataMovementType || '',
+                    row.dataGroup || '',
+                    row.dataAttributes || ''
+                ]);
+            } else {
+                dataRow = worksheet.addRow([
+                    row.dataMovementType === 'E' ? funcUser : '',
+                    row.dataMovementType === 'E' ? trigger : '',
+                    process,
+                    row.subProcessDesc || '',
+                    row.dataMovementType || '',
+                    row.dataGroup || '',
+                    row.dataAttributes || ''
+                ]);
+            }
 
             // 数据行样式
+            const dmtColIndex = hasLevels ? 8 : 5; // 数据移动类型列索引
             dataRow.eachCell((cell, colNumber) => {
                 cell.alignment = { vertical: 'middle', wrapText: true };
                 cell.border = {
@@ -1755,8 +1879,14 @@ app.post('/api/export-excel', async (req, res) => {
                     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F7FF' } };
                 }
 
-                // 数据移动类型颜色
-                if (colNumber === 5) {
+                // 层级列（一级/二级/三级标题）浅紫色背景
+                if (hasLevels && colNumber <= 3 && row.dataMovementType === 'E') {
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F3FF' } };
+                    cell.font = { bold: false, color: { argb: 'FF5B21B6' }, size: 10 };
+                }
+
+                // 数据移动类型列颜色
+                if (colNumber === dmtColIndex) {
                     const colors = { E: 'FF3B82F6', R: 'FF10B981', W: 'FFF59E0B', X: 'FF8B5CF6' };
                     cell.font = { bold: true, color: { argb: colors[row.dataMovementType] || 'FF000000' } };
                     cell.alignment = { horizontal: 'center', vertical: 'middle' };
