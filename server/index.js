@@ -2851,7 +2851,7 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                 ],
                 model: modelName,
                 temperature: 0.5,
-                max_tokens: (extractionMode === 'quantity' || extractionMode === 'guochanhua') ? 32000 : 16000
+                max_tokens: (extractionMode === 'quantity' || extractionMode === 'guochanhua') ? 16384 : 16000
             });
 
             if (!completion?.choices?.[0]?.message?.content) {
