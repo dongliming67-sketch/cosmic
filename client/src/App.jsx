@@ -796,15 +796,20 @@ function App({ user, token, onLogout }) {
                 });
 
                 try {
-                    // 取批次第一个功能的章节层级作为 headingContext
-                    const batchHeadingCtx = (() => {
-                        const f = batch.functions[0];
-                        if (!f) return null;
-                        const l1 = f.level1 || '';
-                        const l2 = f.level2 || '';
-                        const l3 = f.level3 || '';
-                        return (l1 || l2 || l3) ? { level1: l1, level2: l2, level3: l3 } : null;
-                    })();
+                    // 构建每个功能过程的独立层级映射（修复：不再只取第一个功能的层级）
+                    const batchFunctionLevelMap = {};
+                    let batchHeadingCtx = null;
+                    batch.functions.forEach(f => {
+                        if (f.functionName) {
+                            const levels = getModuleLevels(f);
+                            if (levels.level1 || levels.level2 || levels.level3) {
+                                batchFunctionLevelMap[f.functionName] = levels;
+                                if (!batchHeadingCtx) {
+                                    batchHeadingCtx = { level1: levels.level1, level2: levels.level2, level3: levels.level3 };
+                                }
+                            }
+                        }
+                    });
                     const res = await axios.post('/api/cosmic-split-batch', {
                         batchFunctions: batch.texts,
                         batchIndex: bi,
@@ -813,7 +818,8 @@ function App({ user, token, onLogout }) {
                         userGuidelines,
                         previousResults: allTableData,
                         userConfig: getUserConfig(),
-                        headingContext: batchHeadingCtx
+                        headingContext: batchHeadingCtx,
+                        functionLevelMap: Object.keys(batchFunctionLevelMap).length > 0 ? batchFunctionLevelMap : null
                     }, { signal });
 
                     if (res.data.success) {
@@ -975,15 +981,20 @@ function App({ user, token, onLogout }) {
                 });
 
                 try {
-                    // 重试时也携带章节层级
-                    const retryHeadingCtx = (() => {
-                        const f = batch.functions[0];
-                        if (!f) return null;
-                        const l1 = f.level1 || '';
-                        const l2 = f.level2 || '';
-                        const l3 = f.level3 || '';
-                        return (l1 || l2 || l3) ? { level1: l1, level2: l2, level3: l3 } : null;
-                    })();
+                    // 重试时也构建每个功能过程的独立层级映射
+                    const retryFunctionLevelMap = {};
+                    let retryHeadingCtx = null;
+                    batch.functions.forEach(f => {
+                        if (f.functionName) {
+                            const levels = getModuleLevels(f);
+                            if (levels.level1 || levels.level2 || levels.level3) {
+                                retryFunctionLevelMap[f.functionName] = levels;
+                                if (!retryHeadingCtx) {
+                                    retryHeadingCtx = { level1: levels.level1, level2: levels.level2, level3: levels.level3 };
+                                }
+                            }
+                        }
+                    });
                     const res = await axios.post('/api/cosmic-split-batch', {
                         batchFunctions: batch.texts,
                         batchIndex: batch.originalIndex,
@@ -992,7 +1003,8 @@ function App({ user, token, onLogout }) {
                         userGuidelines,
                         previousResults: allTableData,
                         userConfig: getUserConfig(),
-                        headingContext: retryHeadingCtx
+                        headingContext: retryHeadingCtx,
+                        functionLevelMap: Object.keys(retryFunctionLevelMap).length > 0 ? retryFunctionLevelMap : null
                     }, { signal });
 
                     if (res.data.success) {

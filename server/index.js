@@ -186,7 +186,7 @@ function alignProcessNames(tableData, referenceNames) {
  * @param {string[]|null} referenceNames - 阶段1确认的标准功能过程名列表（用于名称对齐）
  * @param {{ level1?: string, level2?: string, level3?: string }|null} headingContext - 当前章节的层级上下文
  */
-function parseMarkdownTable(markdown, referenceNames = null, headingContext = null) {
+function parseMarkdownTable(markdown, referenceNames = null, headingContext = null, functionLevelMap = null) {
     if (!markdown) return [];
 
     const tableData = [];
@@ -255,6 +255,29 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
     // 名称对齐：将AI输出的功能过程名映射回阶段1的标准名
     if (referenceNames && referenceNames.length > 0) {
         alignProcessNames(tableData, referenceNames);
+    }
+
+    // 按功能过程独立匹配层级（修复：不再整批共用第一个功能的层级）
+    if (functionLevelMap && Object.keys(functionLevelMap).length > 0) {
+        let currentProcess = '';
+        for (const row of tableData) {
+            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                currentProcess = row.functionalProcess;
+            }
+            // 精确匹配
+            let funcLevels = functionLevelMap[currentProcess];
+            // 模糊匹配：去掉 [章节名] 标记后再试
+            if (!funcLevels && currentProcess) {
+                const cleanName = currentProcess.replace(/\[.*?\]\s*/, '').trim();
+                funcLevels = functionLevelMap[cleanName];
+            }
+            if (funcLevels) {
+                row.level1 = funcLevels.level1 || '';
+                row.level2 = funcLevels.level2 || '';
+                row.level3 = funcLevels.level3 || '';
+            }
+        }
+        console.log(`  🏷️ 已按功能过程独立分配层级（共 ${Object.keys(functionLevelMap).length} 个映射）`);
     }
 
     return deduplicateTableData(tableData);
@@ -1103,7 +1126,7 @@ app.post('/api/extract-functions', async (req, res) => {
 
 app.post('/api/cosmic-split', async (req, res) => {
     try {
-        const { functionList, documentContent = '', userGuidelines = '', previousResults = [], batchIndex = 0, totalBatches = 1, userConfig = null, headingContext = null } = req.body;
+        const { functionList, documentContent = '', userGuidelines = '', previousResults = [], batchIndex = 0, totalBatches = 1, userConfig = null, headingContext = null, functionLevelMap = null } = req.body;
 
         if (!functionList) {
             return res.status(400).json({ error: '缺少功能过程列表' });
@@ -1159,8 +1182,8 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
         // 从functionList中提取标准功能过程名作为对齐参考
         const refFunctions = extractFunctionsFromText(functionList);
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
-        // 解析表格数据（含名称对齐 + 章节层级注入）
-        const tableData = parseMarkdownTable(reply, refNames, headingContext);
+        // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
+        const tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap);
 
         console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
@@ -1189,7 +1212,8 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
             userGuidelines = '',       // 用户特殊要求
             previousResults = [],      // 之前批次已完成的结果（用于避免重复）
             userConfig = null,
-            headingContext = null      // 当前章节的层级上下文 {level1, level2, level3}
+            headingContext = null,     // 当前章节的层级上下文 {level1, level2, level3}（兼容旧版）
+            functionLevelMap = null    // 每个功能过程独立的层级映射 {funcName: {level1, level2, level3}}
         } = req.body;
 
         if (!batchFunctions || batchFunctions.length === 0) {
@@ -1249,8 +1273,8 @@ ${completedFunctions.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             const match = text.match(/##\s*功能过程[：:]\s*(.+)/);
             return match ? match[1].trim() : null;
         }).filter(Boolean);
-        // 解析表格数据（含名称对齐 + 章节层级注入）
-        const tableData = parseMarkdownTable(reply, refNames, headingContext);
+        // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
+        const tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap);
 
         console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
