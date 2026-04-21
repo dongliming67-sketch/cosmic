@@ -1506,13 +1506,15 @@ function App({ user, token, onLogout }) {
         };
 
         functions.forEach(f => {
-            if (!f.sourceChapter) return;
             if (moduleStructure && moduleStructure.modules) {
-                // 1. 精确匹配 sourceChapter
-                let matched = moduleStructure.modules.find(m =>
-                    m.level3 === f.sourceChapter || m.level2 === f.sourceChapter || m.level1 === f.sourceChapter
-                );
-                // 2. 精确匹配失败时，用 businessObjects/模块名 模糊匹配
+                let matched = null;
+                // 1. 有 sourceChapter 时先精确匹配
+                if (f.sourceChapter) {
+                    matched = moduleStructure.modules.find(m =>
+                        m.level3 === f.sourceChapter || m.level2 === f.sourceChapter || m.level1 === f.sourceChapter
+                    );
+                }
+                // 2. 精确匹配失败时，用 businessObjects/模块名 模糊匹配（无论有无 sourceChapter 都尝试）
                 if (!matched) {
                     matched = fuzzyMatchModule(f, moduleStructure.modules);
                 }
@@ -1520,11 +1522,11 @@ function App({ user, token, onLogout }) {
                     f.level1 = matched.level1 || '';
                     f.level2 = matched.level2 || '';
                     f.level3 = matched.level3 || '';
-                } else {
+                } else if (f.sourceChapter) {
                     // 未匹配时将章节标题放到 level3
                     f.level3 = f.sourceChapter;
                 }
-            } else {
+            } else if (f.sourceChapter) {
                 f.level3 = f.sourceChapter;
             }
         });
@@ -1534,17 +1536,55 @@ function App({ user, token, onLogout }) {
     // 根据功能过程的 sourceChapter 获取三级模块信息
     const getModuleLevels = (func) => {
         // 优先使用功能过程对象上已有的层级（由 parseFunctionListText 模糊匹配设定）
-        if (func.level1 && func.level2) {
-            return { level1: func.level1, level2: func.level2, level3: func.level3 || '' };
+        if (func.level1 || func.level2 || func.level3) {
+            return { level1: func.level1 || '', level2: func.level2 || '', level3: func.level3 || '' };
         }
         const ch = func.sourceChapter || '';
-        if (moduleStructure && moduleStructure.modules && ch) {
-            const matched = moduleStructure.modules.find(m =>
-                m.level3 === ch || m.level2 === ch || m.level1 === ch
-            );
-            if (matched) return { level1: matched.level1 || '', level2: matched.level2 || '', level3: matched.level3 || '' };
+        if (moduleStructure && moduleStructure.modules) {
+            // 1. 精确匹配 sourceChapter
+            if (ch) {
+                const matched = moduleStructure.modules.find(m =>
+                    m.level3 === ch || m.level2 === ch || m.level1 === ch
+                );
+                if (matched) return { level1: matched.level1 || '', level2: matched.level2 || '', level3: matched.level3 || '' };
+            }
+            // 2. 模糊匹配：用 functionName 和 description 匹配模块的 businessObjects
+            const fname = (func.functionName || '').toLowerCase();
+            const fdesc = (func.description || '').toLowerCase();
+            const combined = fname + ' ' + fdesc;
+            if (combined.trim()) {
+                let bestMatch = null;
+                let bestScore = 0;
+                for (const m of moduleStructure.modules) {
+                    let score = 0;
+                    const bos = m.businessObjects || [];
+                    for (const bo of bos) {
+                        const boKey = bo.replace(/[（()）\[\]]/g, '').toLowerCase().trim();
+                        if (boKey.length >= 2) {
+                            const checkLen = Math.min(4, boKey.length);
+                            if (combined.includes(boKey.substring(0, checkLen))) {
+                                score += boKey.length;
+                            }
+                        }
+                    }
+                    const modName = (m.level3 || '').replace(/^[\d.]+\s*/, '').toLowerCase().trim();
+                    if (modName.length >= 2) {
+                        const checkLen = Math.min(4, modName.length);
+                        if (combined.includes(modName.substring(0, checkLen))) {
+                            score += modName.length;
+                        }
+                    }
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMatch = m;
+                    }
+                }
+                if (bestMatch && bestScore >= 2) {
+                    return { level1: bestMatch.level1 || '', level2: bestMatch.level2 || '', level3: bestMatch.level3 || '' };
+                }
+            }
         }
-        return { level1: func.level1 || '', level2: func.level2 || '', level3: func.level3 || ch };
+        return { level1: '', level2: '', level3: ch };
     };
 
     // 将结构化数组转回 ##格式纯文本

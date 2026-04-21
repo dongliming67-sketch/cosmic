@@ -1832,6 +1832,33 @@ app.post('/api/export-excel', async (req, res) => {
             ];
         }
 
+        // 预处理：让没有层级的行继承所属功能过程的层级
+        // 构建每个功能过程的层级映射
+        let inheritL1 = '', inheritL2 = '', inheritL3 = '';
+        for (let i = 0; i < tableData.length; i++) {
+            const row = tableData[i];
+            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                // E行：如果本行有层级就用本行的，否则继承上一个有层级的功能过程
+                if (row.level1 || row.level2 || row.level3) {
+                    inheritL1 = row.level1 || '';
+                    inheritL2 = row.level2 || '';
+                    inheritL3 = row.level3 || '';
+                } else {
+                    // 继承上一个有层级的功能过程的层级
+                    row.level1 = inheritL1;
+                    row.level2 = inheritL2;
+                    row.level3 = inheritL3;
+                }
+            } else {
+                // 非E行：继承当前功能过程的层级
+                if (!row.level1 && !row.level2 && !row.level3) {
+                    row.level1 = inheritL1;
+                    row.level2 = inheritL2;
+                    row.level3 = inheritL3;
+                }
+            }
+        }
+
         // 填充数据
         let currentFuncUser = '';
         let currentTrigger = '';
@@ -1851,14 +1878,15 @@ app.post('/api/export-excel', async (req, res) => {
 
             let dataRow;
             if (hasLevels) {
-                // E行才展示层级，且只在变化时才填写
+                // E行展示层级：每个功能过程都显示（仅在与上一个功能过程层级相同时才省略一级/二级标题，三级标题始终显示）
                 const isE = row.dataMovementType === 'E';
                 const l1 = row.level1 || '';
                 const l2 = row.level2 || '';
                 const l3 = row.level3 || '';
                 const showL1 = (isE && l1 && l1 !== prevL1) ? l1 : '';
                 const showL2 = (isE && l2 && l2 !== prevL2) ? l2 : '';
-                const showL3 = (isE && l3 && l3 !== prevL3) ? l3 : '';
+                // 三级标题：每个功能过程都显示，确保每行都能看到所属模块
+                const showL3 = (isE && l3) ? l3 : '';
                 if (isE && l1) prevL1 = l1;
                 if (isE && l2) prevL2 = l2;
                 if (isE && l3) prevL3 = l3;
