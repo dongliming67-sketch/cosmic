@@ -742,7 +742,7 @@ app.post('/api/understand-document', async (req, res) => {
                 { role: 'user', content: `请分析以下需求文档：\n\n${documentContent}` }
             ],
             model: modelName,
-            temperature: 0.3,
+            temperature: 0.1,
             max_tokens: 8000
         });
 
@@ -1098,7 +1098,7 @@ app.post('/api/extract-functions', async (req, res) => {
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.5,
+            temperature: 0.3,
             max_tokens: 16000
         });
 
@@ -1169,7 +1169,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.5,
+            temperature: 0.3,
             max_tokens: 16000
         });
 
@@ -1259,7 +1259,7 @@ ${completedFunctions.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.5,
+            temperature: 0.3,
             max_tokens: 16000
         });
 
@@ -1425,7 +1425,7 @@ ${targetRequirement}
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.5,
+            temperature: 0.3,
             max_tokens: 16000
         });
 
@@ -1465,7 +1465,7 @@ ${targetRequirement}
                             { role: 'user', content: `## 原始需求文档：\n${documentContent}\n\n## 已提取的功能过程列表（共${allFunctions.length}个）：\n${allFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\n请严格审查以上功能过程列表是否完整覆盖了需求文档中的所有功能。` }
                         ],
                         model: modelName,
-                        temperature: 0.3,
+                        temperature: 0.1,
                         max_tokens: 8000
                     });
 
@@ -1541,7 +1541,7 @@ ${functionListText}
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.3,
+            temperature: 0.1,
             max_tokens: 8000
         });
 
@@ -1638,7 +1638,7 @@ ${missedListText}${vagueHint}
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.5,
+            temperature: 0.3,
             max_tokens: 16000
         });
 
@@ -2436,7 +2436,7 @@ app.post('/api/cosmic/recognize-modules', async (req, res) => {
                 { role: 'user', content: `请分析以下需求文档的功能模块层级结构：\n\n${documentContent}` }
             ],
             model: modelName,
-            temperature: 0.3,
+            temperature: 0.1,
             max_tokens: 8000
         });
 
@@ -2482,7 +2482,7 @@ app.post('/api/nesma/recognize-modules', async (req, res) => {
                 { role: 'user', content: `请分析以下需求文档的功能模块层级结构：\n\n${documentContent}` }
             ],
             model: modelName,
-            temperature: 0.3,
+            temperature: 0.1,
             max_tokens: 8000
         });
 
@@ -2902,7 +2902,7 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                     { role: 'user', content: prompt }
                 ],
                 model: modelName,
-                temperature: 0.5,
+                temperature: 0.3,
                 max_tokens: (extractionMode === 'quantity' || extractionMode === 'guochanhua') ? 16384 : 16000
             });
 
@@ -3007,7 +3007,7 @@ app.post('/api/nesma/verify-coverage', async (req, res) => {
                 { role: 'user', content: `## 原始需求文档：\n${documentContent}\n\n## 已提取的NESMA功能点（共${extractedFunctions.length}个，含三级模块路径和描述）：\n${funcListText}\n\n请严格审查功能点覆盖度，重点检查：1.每个ILF是否有配套EI和EO/EQ；2.是否有未覆盖的三级模块；3.文档中未体现的EQ子类（导出、推送、筛选）。` }
             ],
             model: modelName,
-            temperature: 0.3,
+            temperature: 0.1,
             max_tokens: 8000
         });
 
@@ -3066,7 +3066,7 @@ app.post('/api/nesma/extract-supplementary', async (req, res) => {
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.5,
+            temperature: 0.3,
             max_tokens: 16000
         });
 

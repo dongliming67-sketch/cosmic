@@ -84,7 +84,7 @@ async function callAI(options) {
     const {
         messages,
         model = process.env.DEFAULT_MODEL || 'DeepSeek-V3-671B',
-        temperature = 0.7,
+        temperature = 0.3,
         max_tokens = 8000,
         stream = false,
         res = null,
