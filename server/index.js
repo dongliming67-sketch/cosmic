@@ -1366,59 +1366,86 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
         }
 
         if (incompleteFuncs.length > 0) {
-            console.warn(`⚠️ COSMIC拆分: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，逐个补拆中...`);
+            console.warn(`⚠️ COSMIC拆分: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，逐个JSON补拆中...`);
             
             for (const funcName of incompleteFuncs) {
                 try {
-                    const singleRepairPrompt = `请对以下**1个**功能过程进行完整的COSMIC拆分。
+                    const singleRepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。
 
-功能过程名称：${funcName}
+要求：
+- 必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)
+- 只输出JSON数组，不要任何其他文字
 
-## 严格输出要求
-你必须输出**完整的4行以上**的Markdown表格，包含：
-- 第1行：E（输入）—— 接收请求/信号
-- 第2行：R（读取）—— 从数据库读取相关数据
-- 第3行：W（写入）—— 将处理结果写入数据库
-- 第4行：X（输出）—— 返回结果/响应
+输出格式示例：
+[
+  {"dmt":"E","subProcess":"接收xxx请求","dataGroup":"xxx请求数据","dataAttributes":"请求ID、操作类型、时间戳、参数"},
+  {"dmt":"R","subProcess":"读取xxx配置数据","dataGroup":"xxx配置表","dataAttributes":"配置ID、配置名称、配置值、更新时间"},
+  {"dmt":"W","subProcess":"保存xxx处理结果","dataGroup":"xxx结果记录表","dataAttributes":"记录ID、处理结果、状态、保存时间"},
+  {"dmt":"X","subProcess":"返回xxx处理响应","dataGroup":"xxx响应数据","dataAttributes":"响应码、处理状态、结果摘要、响应时间"}
+]
 
-**绝对禁止只输出E行！必须有R、W、X行！**
-
-|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|
-|:---|:---|:---|:---|:---|:---|:---|`;
+现在请输出"${funcName}"的COSMIC拆分JSON：`;
 
                     const singleRepair = await callAIWithRetry({
                         messages: [
-                            { role: 'system', content: COSMIC_SPLIT_PROMPT },
                             { role: 'user', content: singleRepairPrompt }
                         ],
                         model: modelName,
                         temperature: 0.3,
-                        max_tokens: 4000
+                        max_tokens: 2000
                     });
 
                     if (singleRepair?.choices?.[0]?.message?.content) {
                         const repairReply = singleRepair.choices[0].message.content;
-                        const repairData = parseMarkdownTable(repairReply, [funcName], headingContext, functionLevelMap);
+                        const jsonMatch = repairReply.match(/\[[\s\S]*\]/);
+                        if (jsonMatch) {
+                            try {
+                                const parsed = JSON.parse(jsonMatch[0]);
+                                if (Array.isArray(parsed) && parsed.length >= 4) {
+                                    const hasE = parsed.some(r => r.dmt === 'E');
+                                    const hasR = parsed.some(r => r.dmt === 'R');
+                                    const hasW = parsed.some(r => r.dmt === 'W');
+                                    const hasX = parsed.some(r => r.dmt === 'X');
 
-                        const hasRepairR = repairData.some(r => r.dataMovementType === 'R');
-                        const hasRepairW = repairData.some(r => r.dataMovementType === 'W');
-                        const hasRepairX = repairData.some(r => r.dataMovementType === 'X');
+                                    if (hasE && hasR && hasW && hasX) {
+                                        const origERow = tableData.find(r => r.dataMovementType === 'E' && r.functionalProcess && r.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
+                                        const fUser = origERow?.functionalUser || '';
+                                        const tEvent = origERow?.triggerEvent || '';
 
-                        if (repairData.length >= 4 && hasRepairR && hasRepairW && hasRepairX) {
-                            const cleanedData = [];
-                            let skipCurrent = false;
-                            for (const row of tableData) {
-                                if (row.dataMovementType === 'E' && row.functionalProcess) {
-                                    skipCurrent = (row.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
+                                        const repairData = parsed.map(item => ({
+                                            functionalUser: fUser,
+                                            triggerEvent: tEvent,
+                                            functionalProcess: item.dmt === 'E' ? funcName : '',
+                                            subProcessDesc: item.subProcess || '',
+                                            dataMovementType: item.dmt,
+                                            dataGroup: item.dataGroup || '待补充',
+                                            dataAttributes: item.dataAttributes || '待补充',
+                                            level1: origERow?.level1 || headingContext?.level1 || '',
+                                            level2: origERow?.level2 || headingContext?.level2 || '',
+                                            level3: origERow?.level3 || headingContext?.level3 || ''
+                                        }));
+
+                                        const cleanedData = [];
+                                        let skipCurrent = false;
+                                        for (const row of tableData) {
+                                            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                                                skipCurrent = (row.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
+                                            }
+                                            if (!skipCurrent) {
+                                                cleanedData.push(row);
+                                            }
+                                        }
+                                        tableData = [...cleanedData, ...repairData];
+                                        console.log(`  ✅ "${funcName}" JSON补拆成功 (${repairData.length}行)`);
+                                    } else {
+                                        console.warn(`  ⚠️ "${funcName}" JSON补拆缺少类型 (E:${hasE} R:${hasR} W:${hasW} X:${hasX})`);
+                                    }
                                 }
-                                if (!skipCurrent) {
-                                    cleanedData.push(row);
-                                }
+                            } catch (jsonErr) {
+                                console.warn(`  ⚠️ "${funcName}" JSON解析失败: ${jsonErr.message}`);
                             }
-                            tableData = [...cleanedData, ...repairData];
-                            console.log(`  ✅ "${funcName}" 补拆成功 (${repairData.length}行)`);
                         } else {
-                            console.warn(`  ⚠️ "${funcName}" 补拆结果仍不完整，保留原E行`);
+                            console.warn(`  ⚠️ "${funcName}" 补拆回复中未找到JSON数组`);
                         }
                     }
                 } catch (singleErr) {
@@ -1579,62 +1606,91 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         }
 
         if (incompleteFuncs.length > 0) {
-            console.warn(`⚠️ 批次 ${batchIndex + 1}: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，逐个补拆中...`);
+            console.warn(`⚠️ 批次 ${batchIndex + 1}: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，逐个JSON补拆中...`);
             
-            // 逐个功能过程单独补拆（V3.2 批量补拆仍会偷懒，必须逐个调用）
             for (const funcName of incompleteFuncs) {
                 try {
-                    const singleRepairPrompt = `请对以下**1个**功能过程进行完整的COSMIC拆分。
+                    // 使用JSON格式输出，彻底绕过Markdown表格解析问题
+                    const singleRepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。
 
-功能过程名称：${funcName}
+要求：
+- 必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)
+- 只输出JSON数组，不要任何其他文字
 
-## 严格输出要求
-你必须输出**完整的4行以上**的Markdown表格，包含：
-- 第1行：E（输入）—— 接收请求/信号
-- 第2行：R（读取）—— 从数据库读取相关数据
-- 第3行：W（写入）—— 将处理结果写入数据库
-- 第4行：X（输出）—— 返回结果/响应
+输出格式示例：
+[
+  {"dmt":"E","subProcess":"接收xxx请求","dataGroup":"xxx请求数据","dataAttributes":"请求ID、操作类型、时间戳、参数"},
+  {"dmt":"R","subProcess":"读取xxx配置数据","dataGroup":"xxx配置表","dataAttributes":"配置ID、配置名称、配置值、更新时间"},
+  {"dmt":"W","subProcess":"保存xxx处理结果","dataGroup":"xxx结果记录表","dataAttributes":"记录ID、处理结果、状态、保存时间"},
+  {"dmt":"X","subProcess":"返回xxx处理响应","dataGroup":"xxx响应数据","dataAttributes":"响应码、处理状态、结果摘要、响应时间"}
+]
 
-**绝对禁止只输出E行！必须有R、W、X行！**
-
-|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|
-|:---|:---|:---|:---|:---|:---|:---|`;
+现在请输出"${funcName}"的COSMIC拆分JSON：`;
 
                     const singleRepair = await callAIWithRetry({
                         messages: [
-                            { role: 'system', content: COSMIC_SPLIT_PROMPT },
                             { role: 'user', content: singleRepairPrompt }
                         ],
                         model: modelName,
                         temperature: 0.3,
-                        max_tokens: 4000
+                        max_tokens: 2000
                     });
 
                     if (singleRepair?.choices?.[0]?.message?.content) {
                         const repairReply = singleRepair.choices[0].message.content;
-                        const repairData = parseMarkdownTable(repairReply, [funcName], headingContext, functionLevelMap);
+                        // 从回复中提取JSON数组
+                        const jsonMatch = repairReply.match(/\[[\s\S]*\]/);
+                        if (jsonMatch) {
+                            try {
+                                const parsed = JSON.parse(jsonMatch[0]);
+                                if (Array.isArray(parsed) && parsed.length >= 4) {
+                                    const hasE = parsed.some(r => r.dmt === 'E');
+                                    const hasR = parsed.some(r => r.dmt === 'R');
+                                    const hasW = parsed.some(r => r.dmt === 'W');
+                                    const hasX = parsed.some(r => r.dmt === 'X');
 
-                        // 验证补拆结果是否完整（必须有R和W和X）
-                        const hasRepairR = repairData.some(r => r.dataMovementType === 'R');
-                        const hasRepairW = repairData.some(r => r.dataMovementType === 'W');
-                        const hasRepairX = repairData.some(r => r.dataMovementType === 'X');
+                                    if (hasE && hasR && hasW && hasX) {
+                                        // 找到原E行的functionalUser和triggerEvent
+                                        const origERow = tableData.find(r => r.dataMovementType === 'E' && r.functionalProcess && r.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
+                                        const fUser = origERow?.functionalUser || '';
+                                        const tEvent = origERow?.triggerEvent || '';
 
-                        if (repairData.length >= 4 && hasRepairR && hasRepairW && hasRepairX) {
-                            // 移除原来只有E行的不完整数据
-                            const cleanedData = [];
-                            let skipCurrent = false;
-                            for (const row of tableData) {
-                                if (row.dataMovementType === 'E' && row.functionalProcess) {
-                                    skipCurrent = (row.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
+                                        // 转换为tableData格式
+                                        const repairData = parsed.map(item => ({
+                                            functionalUser: fUser,
+                                            triggerEvent: tEvent,
+                                            functionalProcess: item.dmt === 'E' ? funcName : '',
+                                            subProcessDesc: item.subProcess || '',
+                                            dataMovementType: item.dmt,
+                                            dataGroup: item.dataGroup || '待补充',
+                                            dataAttributes: item.dataAttributes || '待补充',
+                                            level1: origERow?.level1 || headingContext?.level1 || '',
+                                            level2: origERow?.level2 || headingContext?.level2 || '',
+                                            level3: origERow?.level3 || headingContext?.level3 || ''
+                                        }));
+
+                                        // 移除原来不完整的数据，替换为补拆结果
+                                        const cleanedData = [];
+                                        let skipCurrent = false;
+                                        for (const row of tableData) {
+                                            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                                                skipCurrent = (row.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
+                                            }
+                                            if (!skipCurrent) {
+                                                cleanedData.push(row);
+                                            }
+                                        }
+                                        tableData = [...cleanedData, ...repairData];
+                                        console.log(`  ✅ "${funcName}" JSON补拆成功 (${repairData.length}行)`);
+                                    } else {
+                                        console.warn(`  ⚠️ "${funcName}" JSON补拆缺少类型 (E:${hasE} R:${hasR} W:${hasW} X:${hasX})`);
+                                    }
                                 }
-                                if (!skipCurrent) {
-                                    cleanedData.push(row);
-                                }
+                            } catch (jsonErr) {
+                                console.warn(`  ⚠️ "${funcName}" JSON解析失败: ${jsonErr.message}`);
                             }
-                            tableData = [...cleanedData, ...repairData];
-                            console.log(`  ✅ "${funcName}" 补拆成功 (${repairData.length}行)`);
                         } else {
-                            console.warn(`  ⚠️ "${funcName}" 补拆结果仍不完整 (R:${hasRepairR} W:${hasRepairW} X:${hasRepairX})，保留原E行`);
+                            console.warn(`  ⚠️ "${funcName}" 补拆回复中未找到JSON数组`);
                         }
                     }
                 } catch (singleErr) {
