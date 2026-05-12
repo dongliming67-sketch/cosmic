@@ -222,18 +222,67 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
 
         // 解析数据行
         const cells = trimmed.split('|').filter((_, i, arr) => i > 0 && i < arr.length - 1).map(c => c.trim());
-        if (cells.length < 7) continue;
 
-        const [funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes] = cells;
+        // ─── DMT 规范化函数（兼容 V3.2 多种格式）───
+        // 支持：E/R/W/X（标准）、R（读）/W（写）/X（出）（中文括注）
+        //        Entry/Read/Write/Exit（英文全称）、输入/读/写/输出（纯中文）
+        const normalizeDmt = (raw) => {
+            const s = (raw || '').trim();
+            const up = s.toUpperCase();
+            if (up === 'E' || up === 'ENTRY' || s === '输入') return 'E';
+            if (up === 'R' || up === 'READ'  || s === '读' || s === '读取') return 'R';
+            if (up === 'W' || up === 'WRITE' || s === '写' || s === '写入' || s === '保存') return 'W';
+            if (up === 'X' || up === 'EXIT'  || s === '输出' || s === '退出') return 'X';
+            // 带括注：R（读）、W（写）、X（出）—— 取括注外第一个字母
+            const firstLetter = up.replace(/[（(].*?[)）]/g, '').trim();
+            if (['E','R','W','X'].includes(firstLetter)) return firstLetter;
+            return null; // 无法识别
+        };
 
-        // 更新当前功能用户、触发事件、功能过程
+        let funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes;
+        let dmt = null;
+
+        if (cells.length >= 7) {
+            // 标准7列格式
+            [funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes] = cells;
+            dmt = normalizeDmt(dataMovementType);
+
+            // V3.2 有时把列顺序变成：...| subProcessDesc | dataGroup | dataAttributes | DMT |（DMT移到最后）
+            if (!dmt && cells.length >= 7) {
+                const lastDmt = normalizeDmt(cells[cells.length - 1]);
+                if (lastDmt) {
+                    // DMT 在最后一列
+                    dmt = lastDmt;
+                    subProcessDesc = cells[3];
+                    dataGroup     = cells[4];
+                    dataAttributes = cells[5];
+                }
+            }
+        } else if (cells.length >= 4) {
+            // V3.2 的 R/W/X 行有时省略前面的空列，只保留有效列
+            // 尝试扫描每个 cell，找出 DMT 所在位置
+            for (let ci = 0; ci < cells.length; ci++) {
+                const candidate = normalizeDmt(cells[ci]);
+                if (candidate) {
+                    dmt = candidate;
+                    // DMT 前面是子过程描述，后面是数据组、数据属性
+                    subProcessDesc  = cells[ci - 1] || '';
+                    dataGroup       = cells[ci + 1] || '';
+                    dataAttributes  = cells[ci + 2] || '';
+                    funcUser        = '';
+                    triggerEvt      = '';
+                    funcProcess     = '';
+                    break;
+                }
+            }
+        }
+
+        if (!dmt) continue; // 无法识别 DMT，跳过
+
+        // 更新当前功能用户、触发事件、功能过程（仅非空时更新，延续上一行的值）
         if (funcUser) currentFunctionalUser = funcUser;
         if (triggerEvt) currentTriggerEvent = triggerEvt;
         if (funcProcess) currentFunctionalProcess = funcProcess;
-
-        // 验证数据移动类型
-        const dmt = (dataMovementType || '').toUpperCase().trim();
-        if (!['E', 'R', 'W', 'X'].includes(dmt)) continue;
 
         // 清理子过程描述
         const cleanSubProcess = sanitizeText(subProcessDesc);
