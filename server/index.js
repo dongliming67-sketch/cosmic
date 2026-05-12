@@ -1366,53 +1366,64 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
         }
 
         if (incompleteFuncs.length > 0) {
-            console.warn(`⚠️ COSMIC拆分: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，尝试补拆...`);
-            try {
-                const repairPrompt = `以下功能过程的COSMIC拆分不完整（只有E行，缺少R/W/X行），请为每个功能过程补充完整的 R(≥1) + W(≥1) + X(1) 子过程。
+            console.warn(`⚠️ COSMIC拆分: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，逐个补拆中...`);
+            
+            for (const funcName of incompleteFuncs) {
+                try {
+                    const singleRepairPrompt = `请对以下**1个**功能过程进行完整的COSMIC拆分。
 
-## 需要补充R/W/X的功能过程：
-${incompleteFuncs.map((name, i) => `${i + 1}. ${name}`).join('\n')}
+功能过程名称：${funcName}
 
-## 输出要求
-- 每个功能过程输出完整的 E + R + W + X 行（包含E行，因为需要功能过程名称定位）
-- 严格按照COSMIC方法论，E(1个) → R(≥1个) → W(≥1个) → X(1个)
-- 只输出Markdown表格，不要其他说明
+## 严格输出要求
+你必须输出**完整的4行以上**的Markdown表格，包含：
+- 第1行：E（输入）—— 接收请求/信号
+- 第2行：R（读取）—— 从数据库读取相关数据
+- 第3行：W（写入）—— 将处理结果写入数据库
+- 第4行：X（输出）—— 返回结果/响应
+
+**绝对禁止只输出E行！必须有R、W、X行！**
 
 |功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|
 |:---|:---|:---|:---|:---|:---|:---|`;
 
-                const repairCompletion = await callAIWithRetry({
-                    messages: [
-                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
-                        { role: 'user', content: repairPrompt }
-                    ],
-                    model: modelName,
-                    temperature: 0.3,
-                    max_tokens: 16000
-                });
+                    const singleRepair = await callAIWithRetry({
+                        messages: [
+                            { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                            { role: 'user', content: singleRepairPrompt }
+                        ],
+                        model: modelName,
+                        temperature: 0.3,
+                        max_tokens: 4000
+                    });
 
-                if (repairCompletion?.choices?.[0]?.message?.content) {
-                    const repairReply = repairCompletion.choices[0].message.content;
-                    const repairData = parseMarkdownTable(repairReply, incompleteFuncs, headingContext, functionLevelMap);
+                    if (singleRepair?.choices?.[0]?.message?.content) {
+                        const repairReply = singleRepair.choices[0].message.content;
+                        const repairData = parseMarkdownTable(repairReply, [funcName], headingContext, functionLevelMap);
 
-                    if (repairData.length > 0) {
-                        const incompleteSet = new Set(incompleteFuncs.map(n => n.toLowerCase().trim()));
-                        const cleanedData = [];
-                        let skipCurrent = false;
-                        for (const row of tableData) {
-                            if (row.dataMovementType === 'E' && row.functionalProcess) {
-                                skipCurrent = incompleteSet.has(row.functionalProcess.toLowerCase().trim());
+                        const hasRepairR = repairData.some(r => r.dataMovementType === 'R');
+                        const hasRepairW = repairData.some(r => r.dataMovementType === 'W');
+                        const hasRepairX = repairData.some(r => r.dataMovementType === 'X');
+
+                        if (repairData.length >= 4 && hasRepairR && hasRepairW && hasRepairX) {
+                            const cleanedData = [];
+                            let skipCurrent = false;
+                            for (const row of tableData) {
+                                if (row.dataMovementType === 'E' && row.functionalProcess) {
+                                    skipCurrent = (row.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
+                                }
+                                if (!skipCurrent) {
+                                    cleanedData.push(row);
+                                }
                             }
-                            if (!skipCurrent) {
-                                cleanedData.push(row);
-                            }
+                            tableData = [...cleanedData, ...repairData];
+                            console.log(`  ✅ "${funcName}" 补拆成功 (${repairData.length}行)`);
+                        } else {
+                            console.warn(`  ⚠️ "${funcName}" 补拆结果仍不完整，保留原E行`);
                         }
-                        tableData = [...cleanedData, ...repairData];
-                        console.log(`✅ 补拆成功: 补充了 ${repairData.length} 条子过程`);
                     }
+                } catch (singleErr) {
+                    console.warn(`  ⚠️ "${funcName}" 补拆失败: ${singleErr.message}`);
                 }
-            } catch (repairErr) {
-                console.warn('⚠️ 补拆失败，返回已有数据:', repairErr.message);
             }
         }
 
@@ -1492,7 +1503,8 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         userPrompt += `\n\n## ⚡ 再次确认（必须遵守）
 - 上方列出的 **${batchFuncNames.length} 个功能过程必须全部出现在输出表格中**，一个都不能少
 - 功能过程名称与"背景参考"中的名称相似也必须单独拆分，不能以"已完成"为由跳过
-- 每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程
+- **【最重要】每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程，绝对禁止只输出E行就跳到下一个功能过程！**
+- **输出顺序：必须逐个功能过程完整输出（先输出功能A的E→R→W→X全部行，再输出功能B的E→R→W→X全部行），禁止先列出所有E行再补R/W/X！**
 - 输出表格中的"功能过程"列名称必须与上方列表**完全一致**，不得修改
 - 只输出Markdown表格，不要其他说明`;
 
@@ -1567,57 +1579,67 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         }
 
         if (incompleteFuncs.length > 0) {
-            console.warn(`⚠️ 批次 ${batchIndex + 1}: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，尝试补拆: ${incompleteFuncs.join('、')}`);
-            try {
-                // 构建补拆请求：只针对不完整的功能过程
-                const repairPrompt = `以下功能过程的COSMIC拆分不完整（只有E行，缺少R/W/X行），请为每个功能过程补充完整的 R(≥1) + W(≥1) + X(1) 子过程。
+            console.warn(`⚠️ 批次 ${batchIndex + 1}: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，逐个补拆中...`);
+            
+            // 逐个功能过程单独补拆（V3.2 批量补拆仍会偷懒，必须逐个调用）
+            for (const funcName of incompleteFuncs) {
+                try {
+                    const singleRepairPrompt = `请对以下**1个**功能过程进行完整的COSMIC拆分。
 
-## 需要补充R/W/X的功能过程：
-${incompleteFuncs.map((name, i) => `${i + 1}. ${name}`).join('\n')}
+功能过程名称：${funcName}
 
-## 输出要求
-- 每个功能过程输出完整的 E + R + W + X 行（包含E行，因为需要功能过程名称定位）
-- 严格按照COSMIC方法论，E(1个) → R(≥1个) → W(≥1个) → X(1个)
-- 只输出Markdown表格，不要其他说明
+## 严格输出要求
+你必须输出**完整的4行以上**的Markdown表格，包含：
+- 第1行：E（输入）—— 接收请求/信号
+- 第2行：R（读取）—— 从数据库读取相关数据
+- 第3行：W（写入）—— 将处理结果写入数据库
+- 第4行：X（输出）—— 返回结果/响应
+
+**绝对禁止只输出E行！必须有R、W、X行！**
 
 |功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|
 |:---|:---|:---|:---|:---|:---|:---|`;
 
-                const repairCompletion = await callAIWithRetry({
-                    messages: [
-                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
-                        { role: 'user', content: repairPrompt }
-                    ],
-                    model: modelName,
-                    temperature: 0.3,
-                    max_tokens: 16000
-                });
+                    const singleRepair = await callAIWithRetry({
+                        messages: [
+                            { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                            { role: 'user', content: singleRepairPrompt }
+                        ],
+                        model: modelName,
+                        temperature: 0.3,
+                        max_tokens: 4000
+                    });
 
-                if (repairCompletion?.choices?.[0]?.message?.content) {
-                    const repairReply = repairCompletion.choices[0].message.content;
-                    const repairData = parseMarkdownTable(repairReply, incompleteFuncs, headingContext, functionLevelMap);
+                    if (singleRepair?.choices?.[0]?.message?.content) {
+                        const repairReply = singleRepair.choices[0].message.content;
+                        const repairData = parseMarkdownTable(repairReply, [funcName], headingContext, functionLevelMap);
 
-                    if (repairData.length > 0) {
-                        // 用补拆结果替换原来不完整的行
-                        // 先移除原来只有E行的不完整功能过程
-                        const incompleteSet = new Set(incompleteFuncs.map(n => n.toLowerCase().trim()));
-                        const cleanedData = [];
-                        let skipCurrent = false;
-                        for (const row of tableData) {
-                            if (row.dataMovementType === 'E' && row.functionalProcess) {
-                                skipCurrent = incompleteSet.has(row.functionalProcess.toLowerCase().trim());
+                        // 验证补拆结果是否完整（必须有R和W和X）
+                        const hasRepairR = repairData.some(r => r.dataMovementType === 'R');
+                        const hasRepairW = repairData.some(r => r.dataMovementType === 'W');
+                        const hasRepairX = repairData.some(r => r.dataMovementType === 'X');
+
+                        if (repairData.length >= 4 && hasRepairR && hasRepairW && hasRepairX) {
+                            // 移除原来只有E行的不完整数据
+                            const cleanedData = [];
+                            let skipCurrent = false;
+                            for (const row of tableData) {
+                                if (row.dataMovementType === 'E' && row.functionalProcess) {
+                                    skipCurrent = (row.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
+                                }
+                                if (!skipCurrent) {
+                                    cleanedData.push(row);
+                                }
                             }
-                            if (!skipCurrent) {
-                                cleanedData.push(row);
-                            }
+                            tableData = [...cleanedData, ...repairData];
+                            console.log(`  ✅ "${funcName}" 补拆成功 (${repairData.length}行)`);
+                        } else {
+                            console.warn(`  ⚠️ "${funcName}" 补拆结果仍不完整 (R:${hasRepairR} W:${hasRepairW} X:${hasRepairX})，保留原E行`);
                         }
-                        // 拼接补拆结果
-                        tableData = [...cleanedData, ...repairData];
-                        console.log(`✅ 补拆成功: 补充了 ${repairData.length} 条子过程`);
                     }
+                } catch (singleErr) {
+                    console.warn(`  ⚠️ "${funcName}" 补拆失败: ${singleErr.message}`);
                 }
-            } catch (repairErr) {
-                console.warn('⚠️ 补拆失败，返回已有数据:', repairErr.message);
             }
         }
 

@@ -766,7 +766,7 @@ function App({ user, token, onLogout }) {
     };
 
     // ═══════════ 两步骤模式：阶段2 - COSMIC分段拆分（批次模式，断网安全） ═══════════
-    const COSMIC_BATCH_SIZE = 3; // 每批拆分3个功能过程（V3.2输出更冗长，减小批次避免截断）
+    const COSMIC_BATCH_SIZE = 2; // 每批拆分2个功能过程（V3.2必须逐个完整输出ERWX，批次越小越可靠）
 
     const startCosmicSplit = async () => {
         // 先同步结构化数据回 text
