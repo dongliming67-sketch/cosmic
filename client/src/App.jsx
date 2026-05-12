@@ -291,26 +291,57 @@ function App({ user, token, onLogout }) {
         return cleanProcess + original;
     };
 
+    // normalize 功能过程名：去掉章节标记、序号前缀、空格，转小写
+    // 与后端 normalizeProcessName 保持一致，避免 V3.2 微调名称时发生误判
+    const normalizeProcName = (name) => {
+        if (!name) return '';
+        return name
+            .replace(/\[.*?\]\s*/g, '')   // 去掉 [章节名]
+            .replace(/^[\d]+[.、\s]+/, '') // 去掉序号
+            .replace(/\s+/g, '')           // 去掉所有空格
+            .toLowerCase()
+            .trim();
+    };
+
     const deduplicateData = (existing, newData, expectedNames = null) => {
+        // 白名单的 normalize 版本（用于模糊比对）
+        const normalizedWhitelist = expectedNames
+            ? new Set([...expectedNames].map(n => normalizeProcName(n)))
+            : null;
+
         // 1. 按功能过程去重（跳过已存在的整个功能过程，但白名单内的不跳过）
         const existingProcesses = new Set(
             existing.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
                 .map(r => r.functionalProcess.toLowerCase().trim())
         );
+        // 同时保留 normalize 版本，用于模糊比对
+        const existingProcessesNorm = new Set(
+            existing.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
+                .map(r => normalizeProcName(r.functionalProcess))
+        );
+
         const result = [];
         let skipCurrent = false;
         for (const row of newData) {
             if (row.dataMovementType === 'E' && row.functionalProcess) {
                 const nameKey = row.functionalProcess.toLowerCase().trim();
-                // 白名单保护：本批次明确要求拆分的功能过程，即使重名也不跳过
-                if (expectedNames && expectedNames.has(nameKey)) {
+                const nameNorm = normalizeProcName(row.functionalProcess);
+                // 白名单保护：精确匹配 OR normalize 后匹配，都视为本批次应拆分的功能过程
+                const inWhitelist = expectedNames && (
+                    expectedNames.has(nameKey) ||
+                    (normalizedWhitelist && normalizedWhitelist.has(nameNorm))
+                );
+                if (inWhitelist) {
                     skipCurrent = false;
                     existingProcesses.add(nameKey);
-                } else if (existingProcesses.has(nameKey)) {
+                    existingProcessesNorm.add(nameNorm);
+                } else if (existingProcesses.has(nameKey) || existingProcessesNorm.has(nameNorm)) {
+                    // 精确重复 或 normalize 后重复，才跳过（防止 V3.2 微调名称被误跳）
                     skipCurrent = true; continue;
                 } else {
                     skipCurrent = false;
                     existingProcesses.add(nameKey);
+                    existingProcessesNorm.add(nameNorm);
                 }
             }
             if (!skipCurrent) result.push(row);
@@ -825,9 +856,11 @@ function App({ user, token, onLogout }) {
                     if (res.data.success) {
                         const newData = res.data.tableData || [];
                         if (newData.length > 0) {
-                            const expectedNames = new Set(
-                                batch.functions.map(f => f.functionName.toLowerCase().trim())
-                            );
+                            // 白名单同时收录原始小写名 + normalize 名，与 deduplicateData 内的双重检测对齐
+                            const expectedNames = new Set([
+                                ...batch.functions.map(f => f.functionName.toLowerCase().trim()),
+                                ...batch.functions.map(f => normalizeProcName(f.functionName))
+                            ]);
                             const deduped = deduplicateData(allTableData, newData, expectedNames);
                             if (deduped.length > 0) {
                                 allTableData = [...allTableData, ...deduped];
@@ -1010,7 +1043,12 @@ function App({ user, token, onLogout }) {
                     if (res.data.success) {
                         const newData = res.data.tableData || [];
                         if (newData.length > 0) {
-                            const deduped = deduplicateData(allTableData, newData);
+                            // 重试时同样传入白名单，防止重试批次的功能过程被误当作已完成而跳过
+                            const retryExpectedNames = new Set([
+                                ...batch.functions.map(f => f.functionName.toLowerCase().trim()),
+                                ...batch.functions.map(f => normalizeProcName(f.functionName))
+                            ]);
+                            const deduped = deduplicateData(allTableData, newData, retryExpectedNames);
                             if (deduped.length > 0) {
                                 allTableData = [...allTableData, ...deduped];
                                 setTableData(allTableData);

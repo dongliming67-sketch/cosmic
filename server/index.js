@@ -154,7 +154,9 @@ function alignProcessNames(tableData, referenceNames) {
         for (const [refNorm, refOriginal] of normalizedMap.entries()) {
             if (normalized.includes(refNorm) || refNorm.includes(normalized)) {
                 const score = Math.min(normalized.length, refNorm.length) / Math.max(normalized.length, refNorm.length);
-                if (score > bestScore && score > 0.6) {
+                // 阈值提高到 0.8：避免相似但不同的功能过程（如"采集基站数据"和"采集小区数据"）被误对齐
+                // V3.2 输出名称更精确，低阈值反而会造成误合并 → 触发误判为重复 → 整块 skip
+                if (score > bestScore && score > 0.8) {
                     bestScore = score;
                     bestMatch = refOriginal;
                 }
@@ -1226,22 +1228,26 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
         // 将本批次功能过程组成文本
         const batchFunctionText = batchFunctions.join('\n\n');
 
-        // 构建提示
-        let userPrompt = `请对以下 ${batchFunctions.length} 个功能过程进行COSMIC拆分（批次 ${batchIndex + 1}/${totalBatches}）：
+        // 提取本批次功能过程名列表（用于在 prompt 中明确强调"必须输出"）
+        const batchFuncNames = batchFunctions.map(text => {
+            const match = text.match(/##\s*功能过程[：:]\s*(.+)/);
+            return match ? match[1].trim() : null;
+        }).filter(Boolean);
 
-${batchFunctionText}
+        // 构建提示：当前批次强制要求放最前，"已完成"仅作参考背景
+        // 关键：V3.2 更遵循接近末尾的强指令，因此把"必须输出"重申放在最后
+        let userPrompt = `## ⚡ 本次任务（最高优先级，无论如何必须完整输出）
+请对以下 **${batchFunctions.length} 个功能过程**进行COSMIC拆分（批次 ${batchIndex + 1}/${totalBatches}）：
 
-**【重要】请严格按照上方功能过程列表的先后顺序进行拆分输出，不要打乱顺序。**
-**【必须遵守】输出表格中的"功能过程"名称必须与上方列表完全一致，不得自行修改、合并或重命名。**
-每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程。
-只输出Markdown表格，不要其他说明。`;
+${batchFunctionText}`;
 
-        // 如果有之前批次的结果，提醒避免重复
+        // 如果有之前批次的结果，作为"背景参考"提示，不再作为禁止条件
         if (previousResults.length > 0) {
             const completedFunctions = [...new Set(previousResults.map(r => r.functionalProcess).filter(Boolean))];
             if (completedFunctions.length > 0) {
-                userPrompt += `\n\n## 已完成的功能过程（请勿重复，共${completedFunctions.length}个）：
-${completedFunctions.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join('\n')}${completedFunctions.length > 30 ? `\n...（共${completedFunctions.length}个）` : ''}`;
+                userPrompt += `\n\n## 背景参考（仅供避免完全相同子过程描述，不影响本批次输出）
+以下功能过程在之前批次已拆分，它们的子过程描述名称请避免重复，但**不代表本批次功能过程可以跳过**：
+${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${completedFunctions.length > 25 ? `\n...（共${completedFunctions.length}个）` : ''}`;
             }
         }
 
@@ -1252,6 +1258,14 @@ ${completedFunctions.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         if (userGuidelines) {
             userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
         }
+
+        // 重申强制要求放在 prompt 最后，V3.2 更倾向遵循最近的指令
+        userPrompt += `\n\n## ⚡ 再次确认（必须遵守）
+- 上方列出的 **${batchFuncNames.length} 个功能过程必须全部出现在输出表格中**，一个都不能少
+- 功能过程名称与"背景参考"中的名称相似也必须单独拆分，不能以"已完成"为由跳过
+- 每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程
+- 输出表格中的"功能过程"列名称必须与上方列表**完全一致**，不得修改
+- 只输出Markdown表格，不要其他说明`;
 
         const completion = await callAIWithRetry({
             messages: [
