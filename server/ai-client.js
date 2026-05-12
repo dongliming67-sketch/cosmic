@@ -126,9 +126,14 @@ async function callAI(options) {
 
         let fullContent = '';
         let thinkingContent = '';
+        let finishReason = 'stop';
         const isR1 = modelName === 'deepseek-r1' || modelName === 'DeepSeek-R1-0528-Qwen3-8B';
         for await (const chunk of completion) {
             const delta = chunk.choices[0]?.delta;
+            // 检测 finish_reason
+            if (chunk.choices[0]?.finish_reason) {
+                finishReason = chunk.choices[0].finish_reason;
+            }
             // R1 模型：reasoning_content 是思考链，content 是最终答案
             if (isR1 && delta?.reasoning_content) {
                 thinkingContent += delta.reasoning_content;
@@ -139,12 +144,15 @@ async function callAI(options) {
         if (isR1 && thinkingContent) {
             console.log(`   🧠 DeepSeek-R1 思考链长度: ${thinkingContent.length} 字符`);
         }
+        if (finishReason === 'length') {
+            console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${max_tokens}`);
+        }
 
         // 构造一个兼容非流式格式的响应对象
         return {
             choices: [{
                 message: { role: 'assistant', content: fullContent },
-                finish_reason: 'stop'
+                finish_reason: finishReason
             }],
             model: modelName,
             usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
@@ -162,6 +170,11 @@ async function callAI(options) {
         // 验证API响应格式（心流平台可能返回200但body是错误信息）
         if (completion && completion.status && completion.msg && !completion.choices) {
             throw new Error(`API错误 [${completion.status}]: ${completion.msg}（模型: ${modelName}）`);
+        }
+
+        // 检测截断
+        if (completion?.choices?.[0]?.finish_reason === 'length') {
+            console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${max_tokens}`);
         }
 
         return completion;

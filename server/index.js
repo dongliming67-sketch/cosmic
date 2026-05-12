@@ -228,21 +228,52 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
         //        Entry/Read/Write/Exit（英文全称）、输入/读/写/输出（纯中文）
         const normalizeDmt = (raw) => {
             const s = (raw || '').trim();
+            if (!s) return null;
             const up = s.toUpperCase();
-            if (up === 'E' || up === 'ENTRY' || s === '输入') return 'E';
+            if (up === 'E' || up === 'ENTRY' || s === '输入' || s === '入') return 'E';
             if (up === 'R' || up === 'READ'  || s === '读' || s === '读取') return 'R';
             if (up === 'W' || up === 'WRITE' || s === '写' || s === '写入' || s === '保存') return 'W';
-            if (up === 'X' || up === 'EXIT'  || s === '输出' || s === '退出') return 'X';
-            // 带括注：R（读）、W（写）、X（出）—— 取括注外第一个字母
-            const firstLetter = up.replace(/[（(].*?[)）]/g, '').trim();
-            if (['E','R','W','X'].includes(firstLetter)) return firstLetter;
+            if (up === 'X' || up === 'EXIT'  || s === '输出' || s === '退出' || s === '出') return 'X';
+            // 带括注：E（入）、R（读）、W（写）、X（出）、E(Entry) 等
+            const withoutParen = up.replace(/[（(].*?[)）]/g, '').trim();
+            if (['E','R','W','X'].includes(withoutParen)) return withoutParen;
+            // V3.2 有时输出 "E-输入"、"R-读取" 等带连字符格式
+            const dashMatch = up.match(/^([ERWX])\s*[-—–]\s*/);
+            if (dashMatch) return dashMatch[1];
+            // V3.2 有时输出 "1-E"、"2-R" 等带序号格式
+            const numPrefixMatch = up.match(/^\d+\s*[-—–.、]\s*([ERWX])$/);
+            if (numPrefixMatch) return numPrefixMatch[1];
             return null; // 无法识别
         };
 
         let funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes;
         let dmt = null;
 
-        if (cells.length >= 7) {
+        if (cells.length >= 8) {
+            // V3.2 有时多输出一列序号列在最前面，变成8列：序号|功能用户|触发事件|功能过程|子过程描述|DMT|数据组|数据属性
+            // 检测第一列是否是纯数字序号
+            if (/^\d+$/.test(cells[0])) {
+                [, funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes] = cells;
+                dmt = normalizeDmt(dataMovementType);
+                if (!dmt) {
+                    // 序号列 + DMT在最后
+                    const lastDmt = normalizeDmt(cells[cells.length - 1]);
+                    if (lastDmt) {
+                        dmt = lastDmt;
+                        subProcessDesc = cells[4];
+                        dataGroup     = cells[5];
+                        dataAttributes = cells[6];
+                    }
+                }
+            }
+            if (!dmt) {
+                // 不是序号列开头，按标准7列处理（取前7列）
+                [funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes] = cells;
+                dmt = normalizeDmt(dataMovementType);
+            }
+        }
+
+        if (!dmt && cells.length >= 7) {
             // 标准7列格式
             [funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes] = cells;
             dmt = normalizeDmt(dataMovementType);
@@ -285,8 +316,16 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
         if (funcProcess) currentFunctionalProcess = funcProcess;
 
         // 清理子过程描述
-        const cleanSubProcess = sanitizeText(subProcessDesc);
-        if (!cleanSubProcess) continue;
+        let cleanSubProcess = sanitizeText(subProcessDesc);
+        // V3.2 修复：E 行子过程描述为空时不应跳过整行，给一个默认描述
+        if (!cleanSubProcess) {
+            if (dmt === 'E' && currentFunctionalProcess) {
+                cleanSubProcess = `接收${currentFunctionalProcess}请求`;
+                console.log(`  ⚠️ V3.2兼容: E行子过程描述为空，自动补充: "${cleanSubProcess}"`);
+            } else {
+                continue; // 非E行且无子过程描述，跳过
+            }
+        }
 
         tableData.push({
             functionalUser: currentFunctionalUser,
@@ -306,6 +345,52 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
     // 名称对齐：将AI输出的功能过程名映射回阶段1的标准名
     if (referenceNames && referenceNames.length > 0) {
         alignProcessNames(tableData, referenceNames);
+    }
+
+    // V3.2 修复：检测并修复"孤立的 R/W/X 行组"（前面没有 E 行的情况）
+    // 当 V3.2 输出的 E 行因格式异常被跳过时，后续 R/W/X 行会失去所属功能过程
+    // 策略：如果一组 R→W→X 行的 functionalProcess 为空，但 currentFunctionalUser/triggerEvent 有值，
+    //        说明 E 行被跳过了，需要从 referenceNames 中找到下一个未使用的功能过程名补回
+    if (referenceNames && referenceNames.length > 0) {
+        // 收集已成功解析的功能过程名
+        const parsedProcessNames = new Set(tableData.filter(r => r.dataMovementType === 'E' && r.functionalProcess).map(r => r.functionalProcess));
+        // 找出 referenceNames 中未被解析到的功能过程
+        const missingProcesses = referenceNames.filter(name => !parsedProcessNames.has(name));
+
+        if (missingProcesses.length > 0) {
+            console.log(`  ⚠️ V3.2兼容: 检测到 ${missingProcesses.length} 个功能过程的E行可能被跳过: ${missingProcesses.slice(0, 5).join(', ')}${missingProcesses.length > 5 ? '...' : ''}`);
+
+            // 扫描 tableData，找到"第一行就是 R 且前面没有 E"的位置
+            let missingIdx = 0;
+            for (let i = 0; i < tableData.length && missingIdx < missingProcesses.length; i++) {
+                const row = tableData[i];
+                // 找到一个 R 行，且它前面不是 E 行（或者它是第一行）
+                if (row.dataMovementType === 'R') {
+                    const prevRow = i > 0 ? tableData[i - 1] : null;
+                    if (!prevRow || prevRow.dataMovementType === 'X') {
+                        // 这是一个新功能过程组的开始，但缺少 E 行
+                        // 插入一个合成的 E 行
+                        const processName = missingProcesses[missingIdx];
+                        const syntheticE = {
+                            functionalUser: row.functionalUser || currentFunctionalUser || '',
+                            triggerEvent: row.triggerEvent || currentTriggerEvent || '',
+                            functionalProcess: processName,
+                            subProcessDesc: `接收${processName}请求`,
+                            dataMovementType: 'E',
+                            dataGroup: `${processName}请求数据`,
+                            dataAttributes: '请求标识、触发时间、操作类型、请求参数',
+                            level1: hLevel1,
+                            level2: hLevel2,
+                            level3: hLevel3
+                        };
+                        tableData.splice(i, 0, syntheticE);
+                        console.log(`  🔧 V3.2修复: 为 "${processName}" 补充合成E行 (位置${i})`);
+                        missingIdx++;
+                        i++; // 跳过刚插入的行
+                    }
+                }
+            }
+        }
     }
 
     // 按功能过程独立匹配层级（修复：不再整批共用第一个功能的层级）
@@ -1221,20 +1306,115 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
             ],
             model: modelName,
             temperature: 0.3,
-            max_tokens: 16000
+            max_tokens: 32000
         });
 
         if (!completion?.choices?.[0]?.message?.content) {
             console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
             return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
         }
-        const reply = completion.choices[0].message.content;
+        let reply = completion.choices[0].message.content;
+
+        // V3.2 截断检测与自动续传
+        const finishReason = completion.choices[0].finish_reason;
+        if (finishReason === 'length') {
+            console.warn('⚠️ COSMIC拆分输出被截断，尝试续传...');
+            try {
+                const continueCompletion = await callAIWithRetry({
+                    messages: [
+                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                        { role: 'user', content: userPrompt },
+                        { role: 'assistant', content: reply },
+                        { role: 'user', content: '你的输出被截断了，请从上次中断的位置继续输出剩余的Markdown表格行。不要重复已输出的内容，直接续写表格。' }
+                    ],
+                    model: modelName,
+                    temperature: 0.3,
+                    max_tokens: 16000
+                });
+                if (continueCompletion?.choices?.[0]?.message?.content) {
+                    reply += '\n' + continueCompletion.choices[0].message.content;
+                    console.log('✅ 续传成功，已拼接后续内容');
+                }
+            } catch (continueErr) {
+                console.warn('⚠️ 续传失败，使用已有内容:', continueErr.message);
+            }
+        }
 
         // 从functionList中提取标准功能过程名作为对齐参考
         const refFunctions = extractFunctionsFromText(functionList);
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
-        const tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap);
+        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap);
+
+        // ═══ V3.2 完整性校验：检测只有E行没有R/W/X的功能过程，自动补拆 ═══
+        const incompleteFuncs = [];
+        let currentProc = '';
+        let hasR = false, hasW = false, hasX = false;
+        for (const row of tableData) {
+            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                if (currentProc && (!hasR || !hasW || !hasX)) {
+                    incompleteFuncs.push(currentProc);
+                }
+                currentProc = row.functionalProcess;
+                hasR = false; hasW = false; hasX = false;
+            } else if (row.dataMovementType === 'R') hasR = true;
+            else if (row.dataMovementType === 'W') hasW = true;
+            else if (row.dataMovementType === 'X') hasX = true;
+        }
+        if (currentProc && (!hasR || !hasW || !hasX)) {
+            incompleteFuncs.push(currentProc);
+        }
+
+        if (incompleteFuncs.length > 0) {
+            console.warn(`⚠️ COSMIC拆分: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，尝试补拆...`);
+            try {
+                const repairPrompt = `以下功能过程的COSMIC拆分不完整（只有E行，缺少R/W/X行），请为每个功能过程补充完整的 R(≥1) + W(≥1) + X(1) 子过程。
+
+## 需要补充R/W/X的功能过程：
+${incompleteFuncs.map((name, i) => `${i + 1}. ${name}`).join('\n')}
+
+## 输出要求
+- 每个功能过程输出完整的 E + R + W + X 行（包含E行，因为需要功能过程名称定位）
+- 严格按照COSMIC方法论，E(1个) → R(≥1个) → W(≥1个) → X(1个)
+- 只输出Markdown表格，不要其他说明
+
+|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|
+|:---|:---|:---|:---|:---|:---|:---|`;
+
+                const repairCompletion = await callAIWithRetry({
+                    messages: [
+                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                        { role: 'user', content: repairPrompt }
+                    ],
+                    model: modelName,
+                    temperature: 0.3,
+                    max_tokens: 16000
+                });
+
+                if (repairCompletion?.choices?.[0]?.message?.content) {
+                    const repairReply = repairCompletion.choices[0].message.content;
+                    const repairData = parseMarkdownTable(repairReply, incompleteFuncs, headingContext, functionLevelMap);
+
+                    if (repairData.length > 0) {
+                        const incompleteSet = new Set(incompleteFuncs.map(n => n.toLowerCase().trim()));
+                        const cleanedData = [];
+                        let skipCurrent = false;
+                        for (const row of tableData) {
+                            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                                skipCurrent = incompleteSet.has(row.functionalProcess.toLowerCase().trim());
+                            }
+                            if (!skipCurrent) {
+                                cleanedData.push(row);
+                            }
+                        }
+                        tableData = [...cleanedData, ...repairData];
+                        console.log(`✅ 补拆成功: 补充了 ${repairData.length} 条子过程`);
+                    }
+                }
+            } catch (repairErr) {
+                console.warn('⚠️ 补拆失败，返回已有数据:', repairErr.message);
+            }
+        }
 
         console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
@@ -1323,21 +1503,123 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             ],
             model: modelName,
             temperature: 0.3,
-            max_tokens: 16000
+            max_tokens: 32000
         });
 
         if (!completion?.choices?.[0]?.message?.content) {
             console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
             return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
         }
-        const reply = completion.choices[0].message.content;
+        let reply = completion.choices[0].message.content;
+
+        // V3.2 截断检测与自动续传
+        const finishReason = completion.choices[0].finish_reason;
+        if (finishReason === 'length') {
+            console.warn(`⚠️ 批次 ${batchIndex + 1} 输出被截断，尝试续传...`);
+            try {
+                const continueCompletion = await callAIWithRetry({
+                    messages: [
+                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                        { role: 'user', content: userPrompt },
+                        { role: 'assistant', content: reply },
+                        { role: 'user', content: '你的输出被截断了，请从上次中断的位置继续输出剩余的Markdown表格行。不要重复已输出的内容，直接续写表格。' }
+                    ],
+                    model: modelName,
+                    temperature: 0.3,
+                    max_tokens: 16000
+                });
+                if (continueCompletion?.choices?.[0]?.message?.content) {
+                    reply += '\n' + continueCompletion.choices[0].message.content;
+                    console.log(`✅ 批次 ${batchIndex + 1} 续传成功`);
+                }
+            } catch (continueErr) {
+                console.warn('⚠️ 续传失败，使用已有内容:', continueErr.message);
+            }
+        }
+
         // 从batchFunctions中提取标准功能过程名作为对齐参考
         const refNames = batchFunctions.map(text => {
             const match = text.match(/##\s*功能过程[：:]\s*(.+)/);
             return match ? match[1].trim() : null;
         }).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
-        const tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap);
+        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap);
+
+        // ═══ V3.2 完整性校验：检测只有E行没有R/W/X的功能过程，自动补拆 ═══
+        const incompleteFuncs = [];
+        let currentProc = '';
+        let hasR = false, hasW = false, hasX = false;
+        for (const row of tableData) {
+            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                // 检查上一个功能过程是否完整
+                if (currentProc && (!hasR || !hasW || !hasX)) {
+                    incompleteFuncs.push(currentProc);
+                }
+                currentProc = row.functionalProcess;
+                hasR = false; hasW = false; hasX = false;
+            } else if (row.dataMovementType === 'R') hasR = true;
+            else if (row.dataMovementType === 'W') hasW = true;
+            else if (row.dataMovementType === 'X') hasX = true;
+        }
+        // 检查最后一个功能过程
+        if (currentProc && (!hasR || !hasW || !hasX)) {
+            incompleteFuncs.push(currentProc);
+        }
+
+        if (incompleteFuncs.length > 0) {
+            console.warn(`⚠️ 批次 ${batchIndex + 1}: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，尝试补拆: ${incompleteFuncs.join('、')}`);
+            try {
+                // 构建补拆请求：只针对不完整的功能过程
+                const repairPrompt = `以下功能过程的COSMIC拆分不完整（只有E行，缺少R/W/X行），请为每个功能过程补充完整的 R(≥1) + W(≥1) + X(1) 子过程。
+
+## 需要补充R/W/X的功能过程：
+${incompleteFuncs.map((name, i) => `${i + 1}. ${name}`).join('\n')}
+
+## 输出要求
+- 每个功能过程输出完整的 E + R + W + X 行（包含E行，因为需要功能过程名称定位）
+- 严格按照COSMIC方法论，E(1个) → R(≥1个) → W(≥1个) → X(1个)
+- 只输出Markdown表格，不要其他说明
+
+|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|
+|:---|:---|:---|:---|:---|:---|:---|`;
+
+                const repairCompletion = await callAIWithRetry({
+                    messages: [
+                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                        { role: 'user', content: repairPrompt }
+                    ],
+                    model: modelName,
+                    temperature: 0.3,
+                    max_tokens: 16000
+                });
+
+                if (repairCompletion?.choices?.[0]?.message?.content) {
+                    const repairReply = repairCompletion.choices[0].message.content;
+                    const repairData = parseMarkdownTable(repairReply, incompleteFuncs, headingContext, functionLevelMap);
+
+                    if (repairData.length > 0) {
+                        // 用补拆结果替换原来不完整的行
+                        // 先移除原来只有E行的不完整功能过程
+                        const incompleteSet = new Set(incompleteFuncs.map(n => n.toLowerCase().trim()));
+                        const cleanedData = [];
+                        let skipCurrent = false;
+                        for (const row of tableData) {
+                            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                                skipCurrent = incompleteSet.has(row.functionalProcess.toLowerCase().trim());
+                            }
+                            if (!skipCurrent) {
+                                cleanedData.push(row);
+                            }
+                        }
+                        // 拼接补拆结果
+                        tableData = [...cleanedData, ...repairData];
+                        console.log(`✅ 补拆成功: 补充了 ${repairData.length} 条子过程`);
+                    }
+                }
+            } catch (repairErr) {
+                console.warn('⚠️ 补拆失败，返回已有数据:', repairErr.message);
+            }
+        }
 
         console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
@@ -1489,21 +1771,46 @@ ${targetRequirement}
             ],
             model: modelName,
             temperature: 0.3,
-            max_tokens: 16000
+            max_tokens: 32000
         });
 
         if (!completion?.choices?.[0]?.message?.content) {
             console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
             return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
         }
-        const reply = completion.choices[0].message.content;
+        let reply = completion.choices[0].message.content;
+
+        // V3.2 截断检测与自动续传
+        if (completion.choices[0].finish_reason === 'length') {
+            console.warn(`⚠️ 第 ${round} 轮输出被截断，尝试续传...`);
+            try {
+                const continueCompletion = await callAIWithRetry({
+                    messages: [
+                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                        { role: 'user', content: userPrompt },
+                        { role: 'assistant', content: reply },
+                        { role: 'user', content: '你的输出被截断了，请从上次中断的位置继续输出剩余的Markdown表格行。不要重复已输出的内容，直接续写表格。' }
+                    ],
+                    model: modelName,
+                    temperature: 0.3,
+                    max_tokens: 16000
+                });
+                if (continueCompletion?.choices?.[0]?.message?.content) {
+                    reply += '\n' + continueCompletion.choices[0].message.content;
+                    console.log('✅ 续传成功');
+                }
+            } catch (continueErr) {
+                console.warn('⚠️ 续传失败:', continueErr.message);
+            }
+        }
 
         // 判断是否完成
         let isDone = false;
         if (reply.includes('[ALL_DONE]') || reply.includes('已完成') || reply.includes('全部拆分')) {
             isDone = true;
         }
-        const hasValidTable = reply.includes('|') && (reply.includes('|E|') || reply.includes('| E |'));
+        // V3.2 兼容：检测表格中是否有有效的 DMT 标记（E/R/W/X 及其变体）
+        const hasValidTable = reply.includes('|') && (/\|\s*[ERWX]\s*\|/i.test(reply) || /\|\s*(Entry|Read|Write|Exit|输入|读|写|输出)\s*\|/i.test(reply));
         if (!hasValidTable && round > 1) isDone = true;
         // 仅数量优先模式才检查目标数
         if (isQuantityMode && effectiveTarget && completedFunctions.length >= effectiveTarget && !isDone) {
